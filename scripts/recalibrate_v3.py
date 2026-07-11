@@ -13,11 +13,7 @@ from typing import Any
 
 from jlens_panel.config import load_config
 from jlens_panel.data import DEFAULT_BRIDGE_CANDIDATES
-from jlens_panel.provenance import (
-    build_manifest,
-    sha256_file,
-    write_json_atomic,
-)
+from jlens_panel.provenance import build_manifest, sha256_file, write_json_atomic
 from jlens_panel.readouts import (
     CandidateSet,
     ReadoutMethod,
@@ -227,9 +223,7 @@ def compute_train_means(
 
     if not train_artifacts:
         raise RecalibrationError("train artifacts cannot be empty")
-    totals = {
-        method: {candidate: [] for candidate in candidates} for method in METHODS
-    }
+    totals = {method: {candidate: [] for candidate in candidates} for method in METHODS}
     for artifact in train_artifacts:
         if artifact.get("split") != "train":
             raise RecalibrationError("candidate means may use train artifacts only")
@@ -320,9 +314,7 @@ def _prediction_distribution(
     if not set(counts).issubset(candidates):
         raise RecalibrationError("prediction distribution contains an unknown label")
     total = len(predictions)
-    proportions = {
-        candidate: counts[candidate] / total for candidate in candidates
-    }
+    proportions = {candidate: counts[candidate] / total for candidate in candidates}
     entropy = -math.fsum(
         probability * math.log2(probability)
         for probability in proportions.values()
