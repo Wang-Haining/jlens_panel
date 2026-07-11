@@ -93,6 +93,11 @@ def load_experiment_items(path: str | Path) -> list[ExperimentItem]:
             question=example.agent_b_prompt_template,
             gold_bridge=example.gold_bridge,
             gold_answer=example.final_answer,
+            answer_aliases=tuple(
+                answer
+                for answer in example.accepted_answers
+                if answer != example.final_answer
+            ),
         )
         for example in examples
     ]

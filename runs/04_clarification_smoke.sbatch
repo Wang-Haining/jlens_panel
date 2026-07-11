@@ -15,18 +15,18 @@ set -euo pipefail
 
 cd /home/g91p721/jlens_panel
 source runs/tempest_env.sh
-mkdir -p logs results/clarification_smoke
+mkdir -p logs results/clarification_smoke_v3
 
 python scripts/check_disk.py --environment tempest --project-root .
 python scripts/run_dirty_experiment.py \
   --tempest \
-  --data data/generated/dirty_v1/test.jsonl \
-  --scores results/readouts/readout_scores.jsonl \
-  --best-non-j results/readouts/non_j_selection.json \
-  --output results/clarification_smoke/outcomes.jsonl \
+  --data data/generated/dirty_v3/test.jsonl \
+  --scores results/readouts_v3/readout_scores.jsonl \
+  --best-non-j results/readouts_v3/non_j_selection.json \
+  --output results/clarification_smoke_v3/outcomes.jsonl \
   --project-root . \
   --limit 20
 python scripts/analyze_dirty_run.py \
-  --input results/clarification_smoke/outcomes.jsonl \
-  --output results/clarification_smoke/analysis.json
+  --input results/clarification_smoke_v3/outcomes.jsonl \
+  --output results/clarification_smoke_v3/analysis.json
 python scripts/check_disk.py --environment tempest --project-root .

@@ -36,7 +36,7 @@ For a CPU-only data check:
 
 ```bash
 python scripts/generate_dirty_data.py \
-  --output-dir data/generated/dirty_v1 \
+  --output-dir data/generated/dirty_v3 \
   --train-size 16 --dev-size 16 --test-size 16
 ```
 

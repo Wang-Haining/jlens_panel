@@ -19,7 +19,8 @@ study is warranted; its test split is not a paper test set.
 - Read point: last input position at assistant turn start.
 - Readouts: J-lens, logit lens, raw residual probe, next-token logits, and a
   separate text-only classification prompt.
-- Clarification conditions: generic, J-targeted, best non-J, and oracle.
+- Clarification conditions: generic, J-targeted, best non-J, and a deterministic
+  direct-gold oracle.
 - Seeds: 17, 29, and 43 for generated messages and receiver answers.
 
 Personas, 30B models, natural benchmarks, activation editing, routing, tools,
@@ -44,12 +45,14 @@ that common, pre-treatment message before clarification condition assignment.
 This dirty-run audit is not a semantic-absence claim. All-items
 intention-to-treat results are reported alongside the subset analysis.
 
-The targeted arms explicitly present a readout-selected label to Agent A. Their
-utility estimand is therefore **readout-guided query routing**: whether asking A
-about that label elicits a relation that helps B. It is not evidence that the
-label was recovered as private knowledge, and it does not separate relation
-recovery from label echo. A confirmatory utility study would add a direct-to-B
-label-injection control and score clarification relation correctness.
+The J and non-J targeted arms explicitly present a readout-selected label to
+Agent A. Their utility estimand is therefore **readout-guided query routing**:
+whether asking A about that label elicits a relation that helps B. It is not
+evidence that the label was recovered as private knowledge, and it does not
+separate relation recovery from label echo. The direct-gold oracle bypasses
+Agent A generation and tests whether the receiver task has a reachable upper
+bound. A confirmatory utility study would add matched direct-to-B controls for
+the predicted labels and score clarification relation correctness.
 
 ## Go/no-go gates
 

@@ -102,10 +102,16 @@ class HFSenderAdapter:
     ) -> str:
         """Generate a generic or candidate-targeted clarification.
 
-        Every condition receives the same decoding budget.  All targeted
-        conditions use one prompt template, so only the selected candidate
-        differs between J-lens, best-non-J, and oracle branches.
+        J-lens and best-non-J use one matched stochastic prompt template. The
+        oracle is a deterministic direct-gold label control used only to check
+        whether the receiver task has a reachable upper bound.
         """
+
+        if plan.condition is Condition.ORACLE:
+            if plan.target_concept != item.gold_bridge:
+                raise AdapterError("oracle target must equal the gold bridge")
+            candidate = json.dumps(item.gold_bridge, ensure_ascii=False)
+            return f"The bridge concept for the public question is {candidate}."
 
         instruction = _clarification_instruction(plan)
         messages = [

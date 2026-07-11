@@ -36,7 +36,7 @@ SPLITS: tuple[Split, ...] = ("train", "dev", "test")
 CANDIDATE_COUNT = 16
 MIN_DISTRACTORS = 6
 MAX_DISTRACTORS = 10
-SCHEMA_VERSION = "synthetic-bridge-v2"
+SCHEMA_VERSION = "synthetic-bridge-v3"
 AGENT_A_MESSAGE_PLACEHOLDER = "{agent_a_message}"
 
 DEFAULT_BRIDGE_CANDIDATES: tuple[str, ...] = (
@@ -147,10 +147,95 @@ class BridgeDataError(ValueError):
 
 
 @dataclass(frozen=True)
+class AnswerContract:
+    """Finite, explicit answer surfaces for one receiver target."""
+
+    answer_id: str
+    answer_type: str
+    canonical_surface: str
+    accepted_surfaces: tuple[str, ...]
+
+    @classmethod
+    def build(cls, *, answer_id: str, answer_type: str) -> AnswerContract:
+        """Build the two allowed surfaces without fuzzy matching."""
+
+        canonical = f"{answer_type} {answer_id}"
+        contract = cls(
+            answer_id=answer_id,
+            answer_type=answer_type,
+            canonical_surface=canonical,
+            accepted_surfaces=(canonical, answer_id),
+        )
+        contract.validate()
+        return contract
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> AnswerContract:
+        """Parse and validate the versioned receiver-answer contract."""
+
+        required = {
+            "answer_id",
+            "answer_type",
+            "canonical_surface",
+            "accepted_surfaces",
+        }
+        if set(value) != required:
+            raise BridgeDataError("answer_contract has invalid keys")
+        surfaces = value["accepted_surfaces"]
+        if isinstance(surfaces, (str, bytes)) or not isinstance(surfaces, Sequence):
+            raise BridgeDataError("accepted_surfaces must be a sequence")
+        contract = cls(
+            answer_id=value["answer_id"],
+            answer_type=value["answer_type"],
+            canonical_surface=value["canonical_surface"],
+            accepted_surfaces=tuple(surfaces),
+        )
+        contract.validate()
+        return contract
+
+    def validate(self) -> None:
+        """Reject ambiguous, redundant, or inferred answer aliases."""
+
+        fields = {
+            "answer_id": self.answer_id,
+            "answer_type": self.answer_type,
+            "canonical_surface": self.canonical_surface,
+        }
+        for name, value in fields.items():
+            if not isinstance(value, str) or not value or value != value.strip():
+                raise BridgeDataError(f"{name} must be a non-empty stripped string")
+        if re.fullmatch(r"[a-z]+", self.answer_type) is None:
+            raise BridgeDataError("answer_type must be one lowercase ASCII word")
+        if re.fullmatch(r"[a-z]+-[0-9]{6}-[0-9]{3}", self.answer_id) is None:
+            raise BridgeDataError("answer_id must use the compact structured format")
+        expected = f"{self.answer_type} {self.answer_id}"
+        if self.canonical_surface != expected:
+            raise BridgeDataError(
+                "canonical_surface must be answer_type plus answer_id"
+            )
+        if self.accepted_surfaces != (expected, self.answer_id):
+            raise BridgeDataError(
+                "accepted_surfaces must be exactly canonical_surface and answer_id"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a canonical JSON-compatible contract."""
+
+        self.validate()
+        return {
+            "answer_id": self.answer_id,
+            "answer_type": self.answer_type,
+            "canonical_surface": self.canonical_surface,
+            "accepted_surfaces": list(self.accepted_surfaces),
+        }
+
+
+@dataclass(frozen=True)
 class TemplateFamily:
     """Split-specific surface realization for the two relational hops."""
 
     name: str
+    answer_type: str
     agent_a_fact: str
     agent_b_fact: str
     public_question: str
@@ -231,7 +316,7 @@ class SyntheticBridgeExample:
     candidate_bridges: tuple[str, ...]
     source_entity: str
     gold_bridge: str
-    final_answer: str
+    answer_contract: AnswerContract
     distractor_chains: tuple[BridgeChain, ...]
     agent_a_facts: tuple[str, ...]
     agent_b_facts: tuple[str, ...]
@@ -239,6 +324,18 @@ class SyntheticBridgeExample:
     agent_a_probe_prompt: str
     agent_b_prompt_template: str
     schema_version: str = SCHEMA_VERSION
+
+    @property
+    def final_answer(self) -> str:
+        """Return the receiver's canonical typed answer surface."""
+
+        return self.answer_contract.canonical_surface
+
+    @property
+    def accepted_answers(self) -> tuple[str, ...]:
+        """Return the finite preregistered receiver answer set."""
+
+        return self.answer_contract.accepted_surfaces
 
     @property
     def gold_chain(self) -> BridgeChain:
@@ -267,7 +364,7 @@ class SyntheticBridgeExample:
             "candidate_bridges": list(self.candidate_bridges),
             "source_entity": self.source_entity,
             "gold_bridge": self.gold_bridge,
-            "final_answer": self.final_answer,
+            "answer_contract": self.answer_contract.to_dict(),
             "gold_chain": self.gold_chain.to_dict(),
             "distractor_count": self.distractor_count,
             "distractor_chains": [chain.to_dict() for chain in self.distractor_chains],
@@ -292,7 +389,7 @@ class SyntheticBridgeExample:
             "candidate_bridges",
             "source_entity",
             "gold_bridge",
-            "final_answer",
+            "answer_contract",
             "gold_chain",
             "distractor_count",
             "distractor_chains",
@@ -334,7 +431,6 @@ class SyntheticBridgeExample:
             "entity_family",
             "source_entity",
             "gold_bridge",
-            "final_answer",
             "agent_a_prompt",
             "agent_a_probe_prompt",
             "agent_b_prompt_template",
@@ -361,7 +457,9 @@ class SyntheticBridgeExample:
             candidate_bridges=tuple(value["candidate_bridges"]),
             source_entity=value["source_entity"],
             gold_bridge=value["gold_bridge"],
-            final_answer=value["final_answer"],
+            answer_contract=AnswerContract.from_dict(
+                _require_mapping(value["answer_contract"])
+            ),
             distractor_chains=distractors,
             agent_a_facts=tuple(value["agent_a_facts"]),
             agent_b_facts=tuple(value["agent_b_facts"]),
@@ -380,8 +478,9 @@ _SPLIT_RESOURCES: dict[Split, SplitResources] = {
         templates=(
             TemplateFamily(
                 name="archive_assignment",
+                answer_type="destination",
                 agent_a_fact=("Archive index {source} has this bridge clue: {bridge}."),
-                agent_b_fact="Bridge code {bridge} unlocks destination {answer}.",
+                agent_b_fact="Bridge code {bridge} unlocks {answer}.",
                 public_question=(
                     "Which destination is ultimately reached from archive index "
                     "{source}?"
@@ -397,10 +496,11 @@ _SPLIT_RESOURCES: dict[Split, SplitResources] = {
             ),
             TemplateFamily(
                 name="observatory_signal",
+                answer_type="station",
                 agent_a_fact=(
                     "Signal record {source} encodes this marker clue: {bridge}."
                 ),
-                agent_b_fact="Marker {bridge} resolves to station {answer}.",
+                agent_b_fact="Marker {bridge} resolves to {answer}.",
                 public_question=(
                     "Which station ultimately receives signal record {source}?"
                 ),
@@ -415,8 +515,9 @@ _SPLIT_RESOURCES: dict[Split, SplitResources] = {
             ),
             TemplateFamily(
                 name="guild_courier",
+                answer_type="chamber",
                 agent_a_fact="Dispatch {source} carries this token clue: {bridge}.",
-                agent_b_fact="Token {bridge} delivers to chamber {answer}.",
+                agent_b_fact="Token {bridge} delivers to {answer}.",
                 public_question=(
                     "Which chamber ultimately receives dispatch {source}?"
                 ),
@@ -440,10 +541,11 @@ _SPLIT_RESOURCES: dict[Split, SplitResources] = {
         templates=(
             TemplateFamily(
                 name="harbor_manifest",
+                answer_type="berth",
                 agent_a_fact=(
                     "Manifest {source} contains this transfer-pennant clue: {bridge}."
                 ),
-                agent_b_fact="A {bridge} pennant routes cargo to berth {answer}.",
+                agent_b_fact="A {bridge} pennant routes cargo to {answer}.",
                 public_question=(
                     "At which berth should cargo from manifest {source} arrive?"
                 ),
@@ -458,10 +560,11 @@ _SPLIT_RESOURCES: dict[Split, SplitResources] = {
             ),
             TemplateFamily(
                 name="garden_pollinator",
+                answer_type="greenhouse",
                 agent_a_fact=(
                     "Plot {source} contains this pollinator-sign clue: {bridge}."
                 ),
-                agent_b_fact="Pollinator sign {bridge} corresponds to greenhouse {answer}.",
+                agent_b_fact="Pollinator sign {bridge} corresponds to {answer}.",
                 public_question=(
                     "Which greenhouse is ultimately associated with plot {source}?"
                 ),
@@ -476,10 +579,11 @@ _SPLIT_RESOURCES: dict[Split, SplitResources] = {
             ),
             TemplateFamily(
                 name="museum_catalog",
+                answer_type="gallery",
                 agent_a_fact=(
                     "Catalog card {source} contains this curator-seal clue: {bridge}."
                 ),
-                agent_b_fact="Curator seal {bridge} indexes gallery {answer}.",
+                agent_b_fact="Curator seal {bridge} indexes {answer}.",
                 public_question=(
                     "Which gallery is ultimately indexed by catalog card {source}?"
                 ),
@@ -503,10 +607,11 @@ _SPLIT_RESOURCES: dict[Split, SplitResources] = {
         templates=(
             TemplateFamily(
                 name="transit_transfer",
+                answer_type="terminus",
                 agent_a_fact=(
                     "Stop {source} carries this transfer-symbol clue: {bridge}."
                 ),
-                agent_b_fact="The onward terminus for symbol {bridge} is {answer}.",
+                agent_b_fact="The route for symbol {bridge} ends at {answer}.",
                 public_question=(
                     "What is the onward terminus for a traveler at stop {source}?"
                 ),
@@ -521,10 +626,11 @@ _SPLIT_RESOURCES: dict[Split, SplitResources] = {
             ),
             TemplateFamily(
                 name="festival_stage",
+                answer_type="stage",
                 agent_a_fact=(
                     "Performance slip {source} lists this access-motif clue: {bridge}."
                 ),
-                agent_b_fact="Access motif {bridge} admits entry to stage {answer}.",
+                agent_b_fact="Access motif {bridge} admits entry to {answer}.",
                 public_question=(
                     "Which stage can be entered with performance slip {source}?"
                 ),
@@ -539,10 +645,11 @@ _SPLIT_RESOURCES: dict[Split, SplitResources] = {
             ),
             TemplateFamily(
                 name="laboratory_sample",
+                answer_type="bay",
                 agent_a_fact=(
                     "Sample label {source} carries this reagent-tag clue: {bridge}."
                 ),
-                agent_b_fact="Reagent tag {bridge} is processed in bay {answer}.",
+                agent_b_fact="Reagent tag {bridge} is processed in {answer}.",
                 public_question=(
                     "In which bay should sample label {source} ultimately be processed?"
                 ),
@@ -643,9 +750,9 @@ def _identifier(
 
 
 def _entity_name(prefix: str, index: int, slot: int) -> str:
-    """Build a split-safe entity name without exposing gold/distractor status."""
+    """Build a compact split-safe identifier that models can copy exactly."""
 
-    return f"{prefix} {index:06d} unit {slot:02d}"
+    return f"{prefix}-{index:06d}-{slot:03d}"
 
 
 def _build_agent_a_prompt(
@@ -751,7 +858,15 @@ def generate_split(
         source_slots = rng.sample(range(100), distractor_count + 1)
         answer_slots = rng.sample(range(100, 200), distractor_count + 1)
         source = _entity_name(entity_family.source_prefix, index, source_slots[0])
-        answer = _entity_name(entity_family.answer_prefix, index, answer_slots[0])
+        answer_id = _entity_name(
+            entity_family.answer_prefix,
+            index,
+            answer_slots[0],
+        )
+        answer_contract = AnswerContract.build(
+            answer_id=answer_id,
+            answer_type=template.answer_type,
+        )
         distractor_chains = tuple(
             BridgeChain(
                 source_entity=_entity_name(
@@ -760,15 +875,18 @@ def generate_split(
                     source_slots[distractor_index],
                 ),
                 bridge_concept=bridge,
-                final_answer=_entity_name(
-                    entity_family.answer_prefix,
-                    index,
-                    answer_slots[distractor_index],
-                ),
+                final_answer=AnswerContract.build(
+                    answer_id=_entity_name(
+                        entity_family.answer_prefix,
+                        index,
+                        answer_slots[distractor_index],
+                    ),
+                    answer_type=template.answer_type,
+                ).canonical_surface,
             )
             for distractor_index, bridge in enumerate(distractor_bridges, start=1)
         )
-        gold_chain = BridgeChain(source, gold_bridge, answer)
+        gold_chain = BridgeChain(source, gold_bridge, answer_contract.canonical_surface)
         all_chains = [gold_chain, *distractor_chains]
 
         agent_a_facts = [
@@ -805,7 +923,7 @@ def generate_split(
             candidate_bridges=tuple(candidate_order),
             source_entity=source,
             gold_bridge=gold_bridge,
-            final_answer=answer,
+            answer_contract=answer_contract,
             distractor_chains=distractor_chains,
             agent_a_facts=tuple(agent_a_facts),
             agent_b_facts=tuple(agent_b_facts),
@@ -880,7 +998,14 @@ def validate_example(example: SyntheticBridgeExample) -> None:
 
     candidates = validate_candidates(example.candidate_bridges)
     template = _find_template(example.split, example.template_family)
-    _find_entity_family(example.split, example.entity_family)
+    entity_family = _find_entity_family(example.split, example.entity_family)
+    example.answer_contract.validate()
+    if example.answer_contract.answer_type != template.answer_type:
+        raise BridgeDataError("answer_contract type disagrees with template family")
+    if not example.answer_contract.answer_id.startswith(
+        f"{entity_family.answer_prefix}-"
+    ):
+        raise BridgeDataError("answer_contract id disagrees with entity family")
 
     scalar_values = {
         "source_entity": example.source_entity,
@@ -927,6 +1052,9 @@ def validate_example(example: SyntheticBridgeExample) -> None:
     forbidden_answers = {candidate.casefold() for candidate in candidates}
     if any(answer in forbidden_answers for answer in answers):
         raise BridgeDataError("final answers must not collide with bridge candidates")
+    expected_answer_prefix = f"{template.answer_type.casefold()} "
+    if any(not answer.startswith(expected_answer_prefix) for answer in answers):
+        raise BridgeDataError("final answers must include the template's answer type")
 
     expected_a_facts = sorted(
         template.render_agent_a_fact(
@@ -991,6 +1119,8 @@ def validate_example(example: SyntheticBridgeExample) -> None:
             example.agent_b_prompt_template, chain.source_entity
         ):
             raise BridgeDataError("a source entity leaked into Agent B-visible text")
+    if contains_candidate_word(agent_a_visible, example.answer_contract.answer_id):
+        raise BridgeDataError("a bare answer id leaked into Agent A-visible text")
     source_units = {_unit_identifier(chain.source_entity) for chain in chains}
     answer_units = {_unit_identifier(chain.final_answer) for chain in chains}
     if not source_units.isdisjoint(answer_units):
@@ -1028,9 +1158,12 @@ def _all_entities(example: SyntheticBridgeExample) -> set[str]:
 
 def _unit_identifier(entity: str) -> str:
     try:
-        return entity.rsplit(" unit ", 1)[1]
+        identifier = entity.rsplit("-", 1)[1]
     except IndexError as error:  # pragma: no cover - generator invariant
         raise BridgeDataError(f"entity has no unit identifier: {entity!r}") from error
+    if re.fullmatch(r"[0-9]{3}", identifier) is None:
+        raise BridgeDataError(f"entity has an invalid unit identifier: {entity!r}")
+    return identifier
 
 
 def validate_dataset(

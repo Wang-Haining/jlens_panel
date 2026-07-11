@@ -112,7 +112,27 @@ def test_eligibility_uses_common_pre_treatment_message() -> None:
 
 def test_normalized_exact_match() -> None:
     assert exact_match("The Red Planet.", "red planet")
+    assert exact_match(
+        "zenith-000000-151",
+        "bay zenith-000000-151",
+        aliases=("zenith-000000-151",),
+    )
+    assert exact_match(
+        "Bay Zenith-000000-151.",
+        "bay zenith-000000-151",
+        aliases=("zenith-000000-151",),
+    )
     assert not exact_match("blue planet", "red planet")
+    assert not exact_match(
+        "zenith-000000",
+        "bay zenith-000000-151",
+        aliases=("zenith-000000-151",),
+    )
+    assert not exact_match(
+        "stage zenith-000000-151",
+        "bay zenith-000000-151",
+        aliases=("zenith-000000-151",),
+    )
 
 
 def test_jsonl_append_and_resume_reuses_common_message(tmp_path: Path) -> None:

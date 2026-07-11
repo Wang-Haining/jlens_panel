@@ -115,9 +115,19 @@ def test_hf_adapters_share_fixed_clarification_budget_and_blind_receiver() -> No
     )
     sender.clarification(item, _initial(), generic)
     sender.clarification(item, _initial(), targeted)
+    oracle = BranchPlan(
+        condition=Condition.ORACLE,
+        order_index=2,
+        branch_seed=13,
+        target_concept="Mars",
+    )
+    assert sender.clarification(item, _initial(), oracle) == (
+        'The bridge concept for the public question is "Mars".'
+    )
 
     assert sender_completion.calls[0]["max_new_tokens"] == 40
     assert sender_completion.calls[1]["max_new_tokens"] == 19
+    assert len(sender_completion.calls) == 3
     assert sender_completion.calls[2]["max_new_tokens"] == 19
     assert sender_completion.calls[1]["temperature"] == 0.7
     assert sender_completion.calls[2]["temperature"] == 0.7
@@ -235,7 +245,10 @@ class DirtyRunCompletion:
         prompt = messages[-1]["content"]
         if "Return only the final answer" in prompt:
             clarification = prompt.split("CLARIFICATION FROM AGENT A:\n", 1)[1]
-            if clarification.startswith(f"Use bridge {self.gold_bridge}."):
+            if clarification.startswith(f"Use bridge {self.gold_bridge}.") or (
+                f'bridge concept for the public question is "{self.gold_bridge}"'
+                in clarification
+            ):
                 return self.gold_answer
             return "wrong"
         if len(messages) == 3:
@@ -313,7 +326,8 @@ def test_dirty_run_and_analysis_clis_are_gpu_free_with_injection(
     )
     completion = DirtyRunCompletion(
         gold_bridge=example.gold_bridge,
-        gold_answer=example.final_answer,
+        # Exercise the explicit bare-ID alias while the canonical gold is typed.
+        gold_answer=example.answer_contract.answer_id,
     )
     bundle_loads = []
 
@@ -330,7 +344,9 @@ def test_dirty_run_and_analysis_clis_are_gpu_free_with_injection(
     assert first["completed_outcomes"] == 4
     assert first["expected_outcomes"] == 4
     assert len(bundle_loads) == 1
-    assert completion.calls == 9
+    # One initial, three model-generated clarifications, and four receivers.
+    # The direct-gold oracle clarification is deterministic.
+    assert completion.calls == 8
     assert output.with_suffix(".manifest.json").is_file()
     manifest = json.loads(
         output.with_suffix(".manifest.json").read_text(encoding="utf-8")
@@ -347,6 +363,10 @@ def test_dirty_run_and_analysis_clis_are_gpu_free_with_injection(
     outcomes = JsonlResultStore(output).all_outcomes()
     assert len(outcomes) == 4
     assert all(outcome.eligible_omitted for outcome in outcomes)
+    assert all(
+        outcome.answer_aliases == (example.answer_contract.answer_id,)
+        for outcome in outcomes
+    )
     assert sum(outcome.exact_match for outcome in outcomes) == 2
 
     resumed_completion = DirtyRunCompletion(

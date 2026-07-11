@@ -15,7 +15,7 @@ import string
 import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, Sequence
 
 if TYPE_CHECKING:
     from .jsonl import JsonlResultStore
@@ -42,6 +42,7 @@ class ExperimentItem:
     question: str
     gold_bridge: str
     gold_answer: str
+    answer_aliases: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.item_id:
@@ -50,6 +51,23 @@ class ExperimentItem:
             raise ValueError("gold_bridge must be non-empty")
         if not self.gold_answer.strip():
             raise ValueError("gold_answer must be non-empty")
+        if isinstance(self.answer_aliases, (str, bytes)):
+            raise ValueError("answer_aliases must be a sequence of strings")
+        aliases = tuple(self.answer_aliases)
+        if any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
+            raise ValueError("answer_aliases must contain non-empty strings")
+        normalized = [_normalize_answer(value) for value in self.accepted_answers]
+        if any(not value for value in normalized):
+            raise ValueError("accepted answer surfaces must contain alphanumerics")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("accepted answer surfaces must be distinct")
+        object.__setattr__(self, "answer_aliases", aliases)
+
+    @property
+    def accepted_answers(self) -> tuple[str, ...]:
+        """Return the finite canonical-plus-alias answer set."""
+
+        return (self.gold_answer, *self.answer_aliases)
 
     @property
     def fingerprint(self) -> str:
@@ -60,6 +78,7 @@ class ExperimentItem:
                 "context": self.context,
                 "gold_answer": self.gold_answer,
                 "gold_bridge": self.gold_bridge,
+                "answer_aliases": list(self.answer_aliases),
                 "item_id": self.item_id,
                 "question": self.question,
             },
@@ -148,6 +167,7 @@ class OutcomeRecord:
     clarification: str
     predicted_answer: str
     gold_answer: str
+    answer_aliases: tuple[str, ...]
     exact_match: bool
     item_fingerprint: str
 
@@ -161,7 +181,7 @@ class OutcomeRecord:
         """Serialize this outcome as a versioned JSONL record."""
 
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "record_type": "outcome",
             "resume_key": self.resume_key,
             "item_id": self.item_id,
@@ -175,6 +195,7 @@ class OutcomeRecord:
             "clarification": self.clarification,
             "predicted_answer": self.predicted_answer,
             "gold_answer": self.gold_answer,
+            "answer_aliases": list(self.answer_aliases),
             "exact_match": self.exact_match,
             "item_fingerprint": self.item_fingerprint,
         }
@@ -183,7 +204,21 @@ class OutcomeRecord:
     def from_dict(cls, value: dict[str, object]) -> OutcomeRecord:
         """Deserialize and validate one branch outcome."""
 
+        if value.get("schema_version") != 2:
+            raise ValueError("unsupported outcome schema version")
+        if "answer_aliases" not in value:
+            raise ValueError("outcome is missing its answer alias contract")
         target = value.get("target_concept")
+        raw_aliases = value["answer_aliases"]
+        if isinstance(raw_aliases, (str, bytes)) or not isinstance(
+            raw_aliases, Sequence
+        ):
+            raise ValueError("stored answer_aliases must be a sequence")
+        if any(
+            not isinstance(alias, str) or not alias.strip() for alias in raw_aliases
+        ):
+            raise ValueError("stored answer_aliases must contain non-empty strings")
+        aliases = tuple(raw_aliases)
         record = cls(
             item_id=str(value["item_id"]),
             seed=int(value["seed"]),
@@ -196,13 +231,16 @@ class OutcomeRecord:
             clarification=str(value["clarification"]),
             predicted_answer=str(value["predicted_answer"]),
             gold_answer=str(value["gold_answer"]),
+            answer_aliases=aliases,
             exact_match=_require_bool(value["exact_match"]),
             item_fingerprint=str(value["item_fingerprint"]),
         )
         if value.get("resume_key") != record.resume_key:
             raise ValueError("outcome resume key does not match its fields")
         if record.exact_match != exact_match(
-            record.predicted_answer, record.gold_answer
+            record.predicted_answer,
+            record.gold_answer,
+            aliases=record.answer_aliases,
         ):
             raise ValueError("stored exact-match outcome disagrees with answer text")
         expected_order = condition_order(record.item_id, record.seed)
@@ -334,7 +372,12 @@ class ClarificationExperiment:
                 clarification=clarification,
                 predicted_answer=predicted,
                 gold_answer=item.gold_answer,
-                exact_match=exact_match(predicted, item.gold_answer),
+                answer_aliases=item.answer_aliases,
+                exact_match=exact_match(
+                    predicted,
+                    item.gold_answer,
+                    aliases=item.answer_aliases,
+                ),
                 item_fingerprint=item.fingerprint,
             )
             if self.store is None:
@@ -417,6 +460,10 @@ class ClarificationExperiment:
             raise ValueError("condition branches do not share one initial message")
         if outcome.eligible_omitted != initial.eligible_omitted:
             raise ValueError("condition branches disagree on omission eligibility")
+        if outcome.gold_answer != item.gold_answer:
+            raise ValueError("stored gold answer differs from the current item")
+        if outcome.answer_aliases != item.answer_aliases:
+            raise ValueError("stored answer aliases differ from the current item")
 
 
 def derive_seed(item_id: str, seed: int, namespace: str) -> int:
@@ -480,10 +527,24 @@ def gold_bridge_is_absent(message: str, gold_bridge: str) -> bool:
     return f" {bridge} " not in f" {normalized_message} "
 
 
-def exact_match(predicted: str, gold: str) -> bool:
-    """Return standard normalized exact match for a receiver answer."""
+def exact_match(
+    predicted: str,
+    gold: str,
+    *,
+    aliases: Sequence[str] = (),
+) -> bool:
+    """Match one normalized prediction against a finite declared answer set."""
 
-    return _normalize_answer(predicted) == _normalize_answer(gold)
+    if isinstance(aliases, (str, bytes)):
+        raise ValueError("aliases must be a sequence of strings")
+    accepted = (gold, *tuple(aliases))
+    if any(not isinstance(answer, str) or not answer.strip() for answer in accepted):
+        raise ValueError("accepted answers must be non-empty strings")
+    normalized_prediction = _normalize_answer(predicted)
+    normalized_answers = {_normalize_answer(answer) for answer in accepted}
+    if "" in normalized_answers:
+        raise ValueError("accepted answers must contain alphanumerics")
+    return normalized_prediction in normalized_answers
 
 
 def _normalize_lexical(value: str) -> str:

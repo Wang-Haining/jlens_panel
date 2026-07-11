@@ -10,6 +10,7 @@ from jlens_panel.data.synthetic_bridge import (
     BRIDGE_CLUES,
     DEFAULT_BRIDGE_CANDIDATES,
     SCHEMA_VERSION,
+    AnswerContract,
     BridgeDataError,
     SyntheticBridgeExample,
     bridge_clue,
@@ -108,7 +109,7 @@ def test_example_has_explicit_chain_and_no_cross_agent_answer_leak() -> None:
     assert example.gold_chain.bridge_concept == example.gold_bridge
     assert example.gold_chain.final_answer == example.final_answer
     assert len(example.candidate_bridges) == 16
-    assert example.schema_version == SCHEMA_VERSION == "synthetic-bridge-v2"
+    assert example.schema_version == SCHEMA_VERSION == "synthetic-bridge-v3"
     assert "CANDIDATE BRIDGE CONCEPTS" not in example.agent_a_prompt
     assert "PUBLIC END-TO-END QUESTION" in example.agent_a_prompt
     assert "Agent B has a separate private lookup table" in example.agent_a_prompt
@@ -117,6 +118,7 @@ def test_example_has_explicit_chain_and_no_cross_agent_answer_leak() -> None:
     assert "Reply with only" in example.agent_a_probe_prompt
     assert example.final_answer not in example.agent_a_prompt
     assert example.final_answer not in example.agent_a_probe_prompt
+    assert any(example.final_answer in fact for fact in example.agent_b_facts)
     assert example.source_entity not in example.agent_b_prompt_template
     assert bridge_clue(example.gold_bridge, example.split) in example.agent_a_prompt
     assert not any(
@@ -125,8 +127,8 @@ def test_example_has_explicit_chain_and_no_cross_agent_answer_leak() -> None:
         for candidate in example.candidate_bridges
     )
     chains = [example.gold_chain, *example.distractor_chains]
-    source_units = {chain.source_entity.rsplit(" unit ", 1)[1] for chain in chains}
-    answer_units = {chain.final_answer.rsplit(" unit ", 1)[1] for chain in chains}
+    source_units = {chain.source_entity.rsplit("-", 1)[1] for chain in chains}
+    answer_units = {chain.final_answer.rsplit("-", 1)[1] for chain in chains}
     assert source_units.isdisjoint(answer_units)
 
     rendered = render_agent_b_prompt(example, example.gold_bridge)
@@ -146,9 +148,39 @@ def test_all_frozen_clues_are_split_specific_and_candidate_free() -> None:
             ), (candidate, clue)
 
 
+def test_final_answers_include_exact_template_types_in_receiver_relations() -> None:
+    dataset = _small_dataset()
+    expected_types = {
+        "train": {"destination", "station", "chamber"},
+        "dev": {"berth", "greenhouse", "gallery"},
+        "test": {"terminus", "stage", "bay"},
+    }
+
+    for split, examples in dataset.items():
+        observed_types = {example.final_answer.split(" ", 1)[0] for example in examples}
+        assert observed_types == expected_types[split]
+        for example in examples:
+            chains = [example.gold_chain, *example.distractor_chains]
+            assert example.accepted_answers == (
+                example.final_answer,
+                example.answer_contract.answer_id,
+            )
+            assert all(
+                any(chain.final_answer in fact for fact in example.agent_b_facts)
+                for chain in chains
+            )
+
+
 def test_semantic_validation_rejects_tampered_gold_answer() -> None:
     example = _small_dataset()["dev"][0]
-    tampered = replace(example, final_answer="tampered answer")
+    answer_prefix = example.answer_contract.answer_id.split("-", 1)[0]
+    tampered = replace(
+        example,
+        answer_contract=AnswerContract.build(
+            answer_id=f"{answer_prefix}-999999-199",
+            answer_type=example.answer_contract.answer_type,
+        ),
+    )
 
     with pytest.raises(BridgeDataError, match="agent_b_facts"):
         validate_example(tampered)
