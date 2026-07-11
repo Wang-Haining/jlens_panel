@@ -1,0 +1,17 @@
+.DS_Store
+.idea/
+.pytest_cache/
+.venv/
+__pycache__/
+*.egg-info/
+*.py[cod]
+
+# Local experiment state and large artifacts
+artifacts/
+checkpoints/
+data/generated/
+data/fit_corpus/
+logs/
+results/
+runs/local/
+vendor/

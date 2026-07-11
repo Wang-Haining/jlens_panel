@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jlens-panel"
+version = "0.1.0"
+description = "Controlled proof-of-concept experiments for J-lens agent handoffs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+analysis = [
+  "numpy>=1.26,<3",
+  "scikit-learn>=1.5,<2",
+  "scipy>=1.13,<2",
+]
+gpu = [
+  "accelerate>=1.12,<2",
+  "torch>=2.5,<3",
+  "transformers>=5.13,<6",
+  "jlens @ git+https://github.com/anthropics/jacobian-lens.git@581d398613e5602a5af361e1c34d3a92ea82ba8e",
+]
+dev = [
+  "pre-commit>=4,<5",
+  "pytest>=8,<10",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 88

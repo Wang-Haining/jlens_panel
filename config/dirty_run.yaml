@@ -1,0 +1,66 @@
+project:
+  name: dirty-run-poc
+  seed: 20260710
+
+model:
+  name: Qwen/Qwen2.5-7B-Instruct
+  revision: a09a35458c702b33eeacc393d103063234e8bc28
+  dtype: bfloat16
+  device_map: auto
+
+lens:
+  upstream_commit: 581d398613e5602a5af361e1c34d3a92ea82ba8e
+  fit_prompts: 100
+  sequence_length: 128
+  skip_first_positions: 16
+  checkpoint_every: 10
+  canonical_layer_strategy: middle_of_middle_third
+
+data:
+  candidate_count: 16
+  train_size: 1000
+  dev_size: 200
+  test_size: 300
+  distractor_count: 8
+  smoke_size: 20
+
+readouts:
+  methods:
+    - jlens
+    - logit_lens
+    - raw_probe
+    - next_token
+    - text_only
+  primary_metrics:
+    - top1_accuracy
+    - mean_reciprocal_rank
+    - log_loss
+  dev_selection_metric: log_loss
+
+experiment:
+  generation_seeds: [17, 29, 43]
+  initial_message_max_tokens: 32
+  clarification_max_tokens: 24
+  receiver_max_tokens: 16
+  sender_temperature: 0.7
+  receiver_temperature: 0.0
+  top_p: 0.95
+  conditions:
+    - generic
+    - jlens_targeted
+    - best_non_j
+    - oracle
+
+gates:
+  min_sender_bridge_accuracy: 0.70
+  min_omitted_items: 5
+  min_oracle_accuracy_lift: 0.15
+  min_targeted_accuracy_lift: 0.05
+
+storage:
+  run_hard_limit_gb: 20
+  project_warning_gb: 500
+  disk_check_interval: 25
+  local_minimum_free_gb: 20
+  tempest_minimum_free_tb: 2
+  filesystem_warning_fraction: 0.80
