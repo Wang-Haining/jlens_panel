@@ -13,7 +13,6 @@ from jlens_panel.readouts import (
     RawResidualProbeReadout,
     ReadoutMethod,
     ReadoutRecord,
-    ReadoutRequest,
     aggregate_metrics,
     evaluate_record,
 )
@@ -267,24 +266,13 @@ def run_probe_sweep(
             for c in c_values:
                 probe = RawResidualProbeReadout(layer=layer, c=float(c))
                 probe.fit(train_rows, train_target_token_ids, layer=layer)
-                probe_metrics = aggregate_metrics(
-                    evaluate_record(
-                        probe.score(
-                            ReadoutRequest(
-                                example_id=example_id,
-                                candidates=candidate_set,
-                                layer=layer,
-                                residual=dev_row,
-                            )
-                        ),
-                        target_token_id,
-                    )
-                    for example_id, dev_row, target_token_id in zip(
-                        dev_example_ids,
-                        dev_rows,
-                        dev_target_token_ids,
-                        strict=True,
-                    )
+                probe_metrics = _aggregate_logits(
+                    probe.score_batch_logits(dev_rows, candidate_set),
+                    example_ids=dev_example_ids,
+                    target_token_ids=dev_target_token_ids,
+                    candidates=candidate_set,
+                    method=ReadoutMethod.RAW_PROBE,
+                    layer=layer,
                 )
                 probe_candidates.append((float(c), probe_metrics))
                 results.append(

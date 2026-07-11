@@ -43,6 +43,22 @@ class FakeBinaryEstimator:
         return [4.0]
 
 
+class FakeBatchEstimator:
+    classes_ = [2, 5, 7]
+
+    def decision_function(self, values: object) -> list[list[float]]:
+        assert values == [[0.25, -0.5], [-0.25, 0.5]]
+        return [[-1.0, 3.0, 0.5], [2.0, -2.0, 1.0]]
+
+
+class FakeBinaryBatchEstimator:
+    classes_ = [2, 5]
+
+    def decision_function(self, values: object) -> list[float]:
+        assert values == [[0.1, 0.2], [0.3, 0.4]]
+        return [4.0, -2.0]
+
+
 class FakeTensorVector:
     shape = (2,)
 
@@ -224,6 +240,26 @@ def test_binary_probe_margin_becomes_two_candidate_logits() -> None:
 
     assert record.logits == (-2.0, 2.0)
     assert record.probabilities[1] > 0.98
+
+
+def test_probe_batch_scoring_calls_estimator_once(candidates: CandidateSet) -> None:
+    probe = RawResidualProbeReadout(layer=8, estimator=FakeBatchEstimator())
+
+    logits = probe.score_batch_logits(
+        [[0.25, -0.5], [-0.25, 0.5]],
+        candidates,
+    )
+
+    assert logits == ((-1.0, 3.0, 0.5), (2.0, -2.0, 1.0))
+
+
+def test_binary_probe_batch_normalizes_each_margin() -> None:
+    candidates = CandidateSet.from_pairs([(2, "Mars"), (5, "Venus")])
+    probe = RawResidualProbeReadout(layer=3, estimator=FakeBinaryBatchEstimator())
+
+    logits = probe.score_batch_logits([[0.1, 0.2], [0.3, 0.4]], candidates)
+
+    assert logits == ((-2.0, 2.0), (1.0, -1.0))
 
 
 def test_metric_records_aggregate(candidates: CandidateSet) -> None:

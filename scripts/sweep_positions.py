@@ -15,7 +15,11 @@ from pathlib import Path
 
 from jlens_panel.calibration import load_calibrations
 from jlens_panel.config import load_config
-from jlens_panel.data import DEFAULT_BRIDGE_CANDIDATES, SyntheticBridgeExample, read_jsonl
+from jlens_panel.data import (
+    DEFAULT_BRIDGE_CANDIDATES,
+    SyntheticBridgeExample,
+    read_jsonl,
+)
 from jlens_panel.modeling import (
     chat_template_fingerprint,
     load_model_bundle,
@@ -30,10 +34,7 @@ from jlens_panel.provenance import (
     sha256_file,
     write_json_atomic,
 )
-from jlens_panel.readouts.artifacts import (
-    RunByteBudget,
-    stable_fingerprint,
-)
+from jlens_panel.readouts.artifacts import RunByteBudget, stable_fingerprint
 from jlens_panel.runtime import H100RuntimeError, configure_h100_runtime
 from jlens_panel.storage import build_disk_guard, exclusive_run_lock
 from jlens_panel.sweep.capture import (
@@ -46,10 +47,7 @@ from jlens_panel.sweep.capture import (
     save_capture_artifact_atomic,
 )
 from jlens_panel.sweep.positions import ALL_POSITION_NAMES
-from jlens_panel.sweep.probe_sweep import (
-    RESULT_COLUMNS,
-    run_probe_sweep,
-)
+from jlens_panel.sweep.probe_sweep import RESULT_COLUMNS, run_probe_sweep
 
 CAPTURE_RUN_SCHEMA = "jlens-panel-sweep-run-v1"
 CAPTURE_INDEX_SCHEMA = "jlens-panel-sweep-index-v1"
@@ -100,7 +98,10 @@ def _load_train_dev(
     if len(ids) != len(set(ids)):
         raise SweepRunError("train/dev example IDs are not unique")
     inventory = tuple(sorted(DEFAULT_BRIDGE_CANDIDATES))
-    if any(tuple(sorted(example.candidate_bridges)) != inventory for example in all_examples):
+    if any(
+        tuple(sorted(example.candidate_bridges)) != inventory
+        for example in all_examples
+    ):
         raise SweepRunError("train/dev candidate inventory changed")
     return train, dev
 
@@ -310,11 +311,7 @@ def _estimate_artifact_bytes(
 ) -> int:
     raw = (
         len(ALL_POSITION_NAMES) * layers * hidden_size * 2
-        + len(CAPTURE_METHODS)
-        * len(ALL_POSITION_NAMES)
-        * layers
-        * candidates
-        * 4
+        + len(CAPTURE_METHODS) * len(ALL_POSITION_NAMES) * layers * candidates * 4
     )
     return math.ceil(raw * 1.25) + 1_000_000
 
@@ -470,7 +467,8 @@ def run_capture(args: argparse.Namespace) -> dict[str, object]:
     unexpected_files = {
         path.relative_to(output_dir).as_posix()
         for path in output_dir.rglob("*")
-        if path.is_file() and path.relative_to(output_dir).as_posix() not in registered_files
+        if path.is_file()
+        and path.relative_to(output_dir).as_posix() not in registered_files
     }
     if unexpected_files:
         raise SweepRunError(
@@ -487,7 +485,9 @@ def run_capture(args: argparse.Namespace) -> dict[str, object]:
         index_path,
         capture_manifest_sha256=capture_manifest_sha256,
         capture_sha256=capture_sha256,
-        progress_sha256=(sha256_file(progress_path) if progress_hashes is not None else ""),
+        progress_sha256=(
+            sha256_file(progress_path) if progress_hashes is not None else ""
+        ),
         expected_relative_paths=expected_relative_paths,
     )
     if indexed_hashes is not None and progress_hashes != indexed_hashes:
@@ -687,13 +687,9 @@ def _load_calibration_collection(
         "cuda_driver_version": capture_runtime.get("cuda_driver_version"),
         "gpu_name": capture_runtime.get("gpu_name"),
         "gpu_compute_capability": capture_runtime.get("gpu_compute_capability"),
-        "deterministic_algorithms": capture_runtime.get(
-            "deterministic_algorithms"
-        ),
+        "deterministic_algorithms": capture_runtime.get("deterministic_algorithms"),
         "allow_tf32": capture_runtime.get("allow_tf32"),
-        "cublas_workspace_config": capture_runtime.get(
-            "cublas_workspace_config"
-        ),
+        "cublas_workspace_config": capture_runtime.get("cublas_workspace_config"),
     }
     if (
         identity.get("git_revision") != revision
@@ -713,9 +709,7 @@ def _load_calibration_collection(
     if set(artifact_hashes) != expected_names:
         raise SweepRunError("calibration artifact cell inventory changed")
     paths = tuple(calibration_dir / name for name in sorted(expected_names))
-    expected_sha = {
-        str(path.resolve()): artifact_hashes[path.name] for path in paths
-    }
+    expected_sha = {str(path.resolve()): artifact_hashes[path.name] for path in paths}
     calibrations = load_calibrations(paths, expected_sha256=expected_sha)
     if tuple(sorted(candidates)) != next(iter(calibrations.values())).candidates:
         raise SweepRunError("calibration candidate ordering changed")
@@ -962,9 +956,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
     analysis_manifest_path = Path(args.analysis_manifest)
     capture_manifest_path = Path(args.artifact_dir) / CAPTURE_MANIFEST_NAME
     capture_index_path = Path(args.artifact_dir) / CAPTURE_INDEX_NAME
-    calibration_manifest_path = (
-        Path(args.calibration_dir) / "calibration_manifest.json"
-    )
+    calibration_manifest_path = Path(args.calibration_dir) / "calibration_manifest.json"
     capture_manifest = _load_json_mapping(
         capture_manifest_path,
         name="capture manifest",
@@ -1002,8 +994,7 @@ def run_analysis(args: argparse.Namespace) -> dict[str, object]:
         if (
             manifest.get("config_sha256") != sha256_file(config_path)
             or manifest.get("git_revision") != revision
-            or extra.get("capture_manifest_sha256")
-            != current_capture_manifest_sha256
+            or extra.get("capture_manifest_sha256") != current_capture_manifest_sha256
             or extra.get("capture_index_sha256") != current_capture_index_sha256
             or extra.get("calibration_manifest_sha256")
             != current_calibration_manifest_sha256

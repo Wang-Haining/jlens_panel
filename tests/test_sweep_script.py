@@ -3,11 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from jlens_panel.data import (
-    DEFAULT_BRIDGE_CANDIDATES,
-    generate_split,
-    write_jsonl,
-)
+from jlens_panel.data import DEFAULT_BRIDGE_CANDIDATES, generate_split, write_jsonl
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(

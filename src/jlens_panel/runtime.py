@@ -47,9 +47,7 @@ def configure_h100_runtime() -> dict[str, object]:
         "cuda_driver_version": next(iter(driver_versions)),
         "gpu_name": gpu_name,
         "gpu_compute_capability": [int(capability[0]), int(capability[1])],
-        "deterministic_algorithms": bool(
-            torch.are_deterministic_algorithms_enabled()
-        ),
+        "deterministic_algorithms": bool(torch.are_deterministic_algorithms_enabled()),
         "allow_tf32": bool(torch.backends.cuda.matmul.allow_tf32),
         "cublas_workspace_config": os.environ["CUBLAS_WORKSPACE_CONFIG"],
     }

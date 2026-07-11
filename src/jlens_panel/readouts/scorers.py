@@ -235,6 +235,33 @@ class RawResidualProbeReadout:
             metadata=request.metadata,
         )
 
+    def score_batch_logits(
+        self,
+        residuals: object,
+        candidates: CandidateSet,
+    ) -> tuple[tuple[float, ...], ...]:
+        """Score a residual matrix in one estimator call."""
+
+        if not self.is_fitted:
+            raise ReadoutError("raw residual probe has not been fitted")
+        assert self.estimator is not None
+        classes = tuple(
+            int(value)
+            for value in _as_1d_scores(self.estimator.classes_, name="classes")
+        )
+        score_rows = _batch_decision_logits(
+            self.estimator.decision_function(residuals),
+            class_count=len(classes),
+        )
+        return tuple(
+            restrict_candidate_scores(
+                dict(zip(classes, row, strict=True)),
+                candidates,
+                name="raw probe logits",
+            )
+            for row in score_rows
+        )
+
 
 class ReadoutPanel:
     """Run and validate a complete, fixed-support five-readout comparison."""
@@ -334,3 +361,28 @@ def _decision_logits(scores: object, *, class_count: int) -> tuple[float, ...]:
             f"probe returned {len(normalized)} scores for {class_count} classes"
         )
     return normalized
+
+
+def _batch_decision_logits(
+    scores: object,
+    *,
+    class_count: int,
+) -> tuple[tuple[float, ...], ...]:
+    """Normalize sklearn decision scores for multiple samples."""
+
+    values = _tolist(scores)
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ReadoutError("probe batch scores must be a sequence")
+    if not values:
+        raise ReadoutError("probe batch scores cannot be empty")
+    if class_count == 2 and not isinstance(values[0], Sequence):
+        return tuple(
+            _decision_logits([float(margin)], class_count=class_count)
+            for margin in values
+        )
+    rows: list[tuple[float, ...]] = []
+    for row in values:
+        if isinstance(row, (str, bytes)) or not isinstance(row, Sequence):
+            raise ReadoutError("probe batch scores must contain row sequences")
+        rows.append(_decision_logits([row], class_count=class_count))
+    return tuple(rows)
