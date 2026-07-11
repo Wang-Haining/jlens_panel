@@ -26,6 +26,7 @@ from jlens_panel.sweep.positions import (
 CAPTURE_SCHEMA = "jlens-panel-sweep-capture-v1"
 CAPTURE_SPLITS = ("train", "dev")
 CAPTURE_METHODS = ("jlens", "logit_lens")
+NULL_ACCUMULATOR_STATE_SCHEMA = "jlens-panel-null-accumulators-v1"
 _SAFE_EXAMPLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 
 
@@ -40,6 +41,7 @@ class SweepCaptureConflictError(SweepCaptureError):
 SaveFunction: TypeAlias = Callable[[Mapping[str, object], Path], None]
 LoadFunction: TypeAlias = Callable[[bytes], Mapping[str, object]]
 DiskCheck: TypeAlias = Callable[[], None]
+CheckpointWriter: TypeAlias = Callable[[Mapping[str, object]], None]
 
 
 def _is_sha256(value: object) -> bool:
@@ -55,9 +57,7 @@ def _flat_ids(value: object, *, name: str) -> tuple[int, ...]:
         raise SweepCaptureError(f"{name} must be a flat sequence")
     ids = tuple(value)
     if not ids or any(
-        isinstance(token_id, bool)
-        or not isinstance(token_id, int)
-        or token_id < 0
+        isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0
         for token_id in ids
     ):
         raise SweepCaptureError(f"{name} must contain non-negative integers")
@@ -95,13 +95,13 @@ def _validate_tensor(
     *,
     name: str,
     shape: tuple[int, ...],
-    dtype_suffix: str,
+    dtype_name: str,
 ) -> None:
     if _shape(value, name=name) != shape:
         raise SweepCaptureError(f"{name} has the wrong shape")
     dtype = getattr(value, "dtype", None)
-    if dtype is None or not str(dtype).endswith(dtype_suffix):
-        raise SweepCaptureError(f"{name} must have dtype {dtype_suffix}")
+    if dtype is None or str(dtype) not in {dtype_name, f"torch.{dtype_name}"}:
+        raise SweepCaptureError(f"{name} must have dtype {dtype_name}")
     device = getattr(value, "device", None)
     if device is None or str(device) != "cpu":
         raise SweepCaptureError(f"{name} must reside on CPU")
@@ -173,7 +173,9 @@ def build_capture_artifact(
         "residual_dtype": "float16",
         "residual_device": "cpu",
         "residuals": dict(residuals),
-        "scores": {method: dict(method_scores) for method, method_scores in scores.items()},
+        "scores": {
+            method: dict(method_scores) for method, method_scores in scores.items()
+        },
         "fingerprints": {
             "example": example_fingerprint,
             "dataset": dataset_fingerprint,
@@ -276,7 +278,7 @@ def validate_capture_artifact(value: Mapping[str, object]) -> None:
             residuals[position],
             name=f"{position} residuals",
             shape=(len(layers), hidden_size),
-            dtype_suffix="float16",
+            dtype_name="float16",
         )
 
     scores = value["scores"]
@@ -293,15 +295,20 @@ def validate_capture_artifact(value: Mapping[str, object]) -> None:
                 method_scores[position],
                 name=f"{method}/{position} scores",
                 shape=(len(layers), len(inventory)),
-                dtype_suffix="float32",
+                dtype_name="float32",
             )
 
     fingerprints = value["fingerprints"]
-    if not isinstance(fingerprints, Mapping) or set(fingerprints) != {
-        "example",
-        "dataset",
-        "capture",
-    } or not all(_is_sha256(digest) for digest in fingerprints.values()):
+    if (
+        not isinstance(fingerprints, Mapping)
+        or set(fingerprints)
+        != {
+            "example",
+            "dataset",
+            "capture",
+        }
+        or not all(_is_sha256(digest) for digest in fingerprints.values())
+    ):
         raise SweepCaptureError("capture fingerprints are incomplete")
     provenance = value["provenance"]
     if not isinstance(provenance, Mapping) or not provenance:
@@ -417,22 +424,27 @@ def candidate_only_logits(
         final_norm = lens_model._final_norm  # type: ignore[attr-defined]
         softcap = lens_model._logit_softcap  # type: ignore[attr-defined]
     except AttributeError as error:
-        raise SweepCaptureError("unsupported J-lens model unembedding adapter") from error
-    id_tensor = torch.as_tensor(ids, dtype=torch.long, device=head.weight.device)
-    normalized = final_norm(
-        residual.to(dtype=head.weight.dtype, device=head.weight.device)
-    )
-    weight = head.weight.index_select(0, id_tensor)
-    bias = None if head.bias is None else head.bias.index_select(0, id_tensor)
-    logits = functional.linear(normalized, weight, bias)
-    if softcap is not None:
-        logits = softcap * torch.tanh(logits / softcap)
+        raise SweepCaptureError(
+            "unsupported J-lens model unembedding adapter"
+        ) from error
+    with torch.inference_mode():
+        id_tensor = torch.as_tensor(ids, dtype=torch.long, device=head.weight.device)
+        normalized = final_norm(
+            residual.to(dtype=head.weight.dtype, device=head.weight.device)
+        )
+        weight = head.weight.index_select(0, id_tensor)
+        bias = None if head.bias is None else head.bias.index_select(0, id_tensor)
+        logits = functional.linear(normalized, weight, bias)
+        if softcap is not None:
+            logits = softcap * torch.tanh(logits / softcap)
     if logits.shape[-1] != len(ids):
         raise SweepCaptureError("candidate-only unembedding returned the wrong shape")
     return logits
 
 
-def _exact_input_ids(tokenizer: object, text: str, *, max_seq_len: int) -> tuple[int, ...]:
+def _exact_input_ids(
+    tokenizer: object, text: str, *, max_seq_len: int
+) -> tuple[int, ...]:
     try:
         encoded = tokenizer(  # type: ignore[operator]
             text,
@@ -466,16 +478,21 @@ def _forward_activations(
         device=model.input_device,
     )
     requested = tuple(sorted(set(layers)))
-    with torch.inference_mode(), ActivationRecorder(
-        model.layers,
-        at=requested,
-    ) as recorder:
+    with (
+        torch.inference_mode(),
+        ActivationRecorder(
+            model.layers,
+            at=requested,
+        ) as recorder,
+    ):
         model.forward(ids)
     activations: dict[int, object] = {}
     for layer in requested:
         activation = recorder.activations[layer]
         if tuple(activation.shape[:2]) != (1, len(input_ids)):
-            raise SweepCaptureError("recorded activation shape disagrees with input IDs")
+            raise SweepCaptureError(
+                "recorded activation shape disagrees with input IDs"
+            )
         activations[layer] = activation
     return activations
 
@@ -501,13 +518,29 @@ def _pin_jacobians(
                 ) from error
 
 
-def _greedy_token(bundle: object, final_residual: object) -> int:
+def _greedy_token(
+    bundle: object,
+    final_residual: object,
+    *,
+    forbidden_token_ids: Sequence[int] = (),
+) -> int:
     """Select one token from ephemeral full logits without persisting them."""
 
-    logits = bundle.lens_model.unembed(final_residual)  # type: ignore[attr-defined]
-    if getattr(logits, "ndim", None) != 1:
-        raise SweepCaptureError("greedy next-token logits must be one-dimensional")
-    return int(logits.argmax(dim=-1).item())
+    import torch
+
+    with torch.inference_mode():
+        logits = bundle.lens_model.unembed(final_residual)  # type: ignore[attr-defined]
+        if getattr(logits, "ndim", None) != 1:
+            raise SweepCaptureError("greedy next-token logits must be one-dimensional")
+        for token_id in forbidden_token_ids:
+            if (
+                isinstance(token_id, bool)
+                or not isinstance(token_id, int)
+                or not 0 <= token_id < len(logits)
+            ):
+                raise SweepCaptureError("forbidden greedy token ID is out of range")
+            logits[token_id] = float("-inf")
+        return int(logits.argmax(dim=-1).item())
 
 
 def _decode_residuals(
@@ -522,8 +555,13 @@ def _decode_residuals(
     """Capture states located on generated tokens 1, 2, 4, and 8."""
 
     ids = list(initial_ids)
-    token_id = _greedy_token(bundle, initial_activations[final_layer][0, -1])
     eos_token_id = getattr(bundle.tokenizer, "eos_token_id", None)  # type: ignore[attr-defined]
+    forbidden_eos = () if eos_token_id is None else (int(eos_token_id),)
+    token_id = _greedy_token(
+        bundle,
+        initial_activations[final_layer][0, -1],
+        forbidden_token_ids=forbidden_eos,
+    )
     captured: dict[str, dict[int, object]] = {}
     for generated_step in range(1, max(DECODE_STEPS) + 1):
         if len(ids) >= max_seq_len:
@@ -538,10 +576,21 @@ def _decode_residuals(
             captured[f"decode_{generated_step}"] = {
                 layer: activations[layer][0, -1].float() for layer in layers
             }
+        if (
+            generated_step < max(DECODE_STEPS)
+            and eos_token_id is not None
+            and token_id == int(eos_token_id)
+        ):
+            raise SweepCaptureError("EOS masking failed before decode_8")
         if generated_step < max(DECODE_STEPS):
-            if eos_token_id is not None and token_id == int(eos_token_id):
-                raise SweepCaptureError("greedy decoding emitted EOS before decode_8")
-            token_id = _greedy_token(bundle, activations[final_layer][0, -1])
+            next_generated_step = generated_step + 1
+            token_id = _greedy_token(
+                bundle,
+                activations[final_layer][0, -1],
+                forbidden_token_ids=(
+                    forbidden_eos if next_generated_step < max(DECODE_STEPS) else ()
+                ),
+            )
     if tuple(captured) != tuple(f"decode_{step}" for step in DECODE_STEPS):
         raise SweepCaptureError("decode capture did not produce all frozen steps")
     return captured
@@ -562,20 +611,21 @@ def _score_residuals(
         method: {position: [] for position in ALL_POSITION_NAMES}
         for method in CAPTURE_METHODS
     }
-    for layer in layers:
-        matrix = torch.stack(
-            [residuals[position][layer].float() for position in ALL_POSITION_NAMES],
-            dim=0,
-        )
-        transported = bundle.lens.transport(matrix, layer)  # type: ignore[attr-defined]
-        method_logits = {
-            "jlens": candidate_only_logits(bundle.lens_model, transported, ids),  # type: ignore[attr-defined]
-            "logit_lens": candidate_only_logits(bundle.lens_model, matrix, ids),  # type: ignore[attr-defined]
-        }
-        for method, logits in method_logits.items():
-            logits_cpu = logits.detach().float().cpu()
-            for position_index, position in enumerate(ALL_POSITION_NAMES):
-                output[method][position].append(logits_cpu[position_index])
+    with torch.inference_mode():
+        for layer in layers:
+            matrix = torch.stack(
+                [residuals[position][layer].float() for position in ALL_POSITION_NAMES],
+                dim=0,
+            )
+            transported = bundle.lens.transport(matrix, layer)  # type: ignore[attr-defined]
+            method_logits = {
+                "jlens": candidate_only_logits(bundle.lens_model, transported, ids),  # type: ignore[attr-defined]
+                "logit_lens": candidate_only_logits(bundle.lens_model, matrix, ids),  # type: ignore[attr-defined]
+            }
+            for method, logits in method_logits.items():
+                logits_cpu = logits.detach().float().cpu()
+                for position_index, position in enumerate(ALL_POSITION_NAMES):
+                    output[method][position].append(logits_cpu[position_index])
     return {
         method: {
             position: torch.stack(rows, dim=0)
@@ -594,6 +644,9 @@ def capture_task_example(
 ) -> tuple[dict[str, object], dict[str, dict[str, object]], tuple[int, ...]]:
     """Capture all eight positions and every fitted source layer for one item."""
 
+    split = getattr(example, "split", None)
+    if split not in CAPTURE_SPLITS:
+        raise SweepCaptureError("task capture accepts train/dev examples only")
     import torch
 
     if bundle.lens is None:  # type: ignore[attr-defined]
@@ -695,9 +748,7 @@ def _capture_null_prompt_residuals(
         max_seq_len=max_seq_len,
     )
     chat = _forward_activations(bundle, chat_ids, (*layers, final_layer))
-    residuals["template_tail"] = {
-        layer: chat[layer][0, -1].float() for layer in layers
-    }
+    residuals["template_tail"] = {layer: chat[layer][0, -1].float() for layer in layers}
     residuals.update(
         _decode_residuals(
             bundle,
@@ -711,6 +762,117 @@ def _capture_null_prompt_residuals(
     return {position: residuals[position] for position in ALL_POSITION_NAMES}
 
 
+def serialize_null_accumulators(
+    accumulators: Mapping[tuple[str, str, int], NullScoreAccumulator],
+    *,
+    layers: Sequence[int],
+    completed_prompts: int,
+) -> dict[str, object]:
+    """Serialize every cell's sufficient statistics for atomic checkpointing."""
+
+    normalized_layers = tuple(sorted(set(layers)))
+    expected_keys = {
+        (method, position, layer)
+        for method in CAPTURE_METHODS
+        for position in ALL_POSITION_NAMES
+        for layer in normalized_layers
+    }
+    if set(accumulators) != expected_keys:
+        raise SweepCaptureError("null accumulator cell inventory changed")
+    if (
+        isinstance(completed_prompts, bool)
+        or not isinstance(completed_prompts, int)
+        or completed_prompts < 0
+        or any(
+            accumulator.count != completed_prompts
+            for accumulator in accumulators.values()
+        )
+    ):
+        raise SweepCaptureError("null accumulator completion count changed")
+    return {
+        "schema_version": NULL_ACCUMULATOR_STATE_SCHEMA,
+        "completed_prompts": completed_prompts,
+        "cells": [
+            {
+                "method": method,
+                "position": position,
+                "layer": layer,
+                "accumulator": accumulators[(method, position, layer)].to_state(),
+            }
+            for method in CAPTURE_METHODS
+            for position in ALL_POSITION_NAMES
+            for layer in normalized_layers
+        ],
+    }
+
+
+def restore_null_accumulators(
+    value: Mapping[str, object],
+    *,
+    candidates: Sequence[str],
+    layers: Sequence[int],
+) -> tuple[int, dict[tuple[str, str, int], NullScoreAccumulator]]:
+    """Restore a complete, compatible null-accumulator checkpoint."""
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version",
+        "completed_prompts",
+        "cells",
+    }:
+        raise SweepCaptureError("null checkpoint state fields changed")
+    if value["schema_version"] != NULL_ACCUMULATOR_STATE_SCHEMA:
+        raise SweepCaptureError("null checkpoint state schema changed")
+    completed = value["completed_prompts"]
+    if isinstance(completed, bool) or not isinstance(completed, int) or completed < 0:
+        raise SweepCaptureError("null checkpoint completion count is invalid")
+    raw_cells = value["cells"]
+    if isinstance(raw_cells, (str, bytes)) or not isinstance(raw_cells, Sequence):
+        raise SweepCaptureError("null checkpoint cells must be a sequence")
+    normalized_candidates = tuple(sorted(candidates))
+    normalized_layers = tuple(sorted(set(layers)))
+    restored: dict[tuple[str, str, int], NullScoreAccumulator] = {}
+    for raw_cell in raw_cells:
+        if not isinstance(raw_cell, Mapping) or set(raw_cell) != {
+            "method",
+            "position",
+            "layer",
+            "accumulator",
+        }:
+            raise SweepCaptureError("null checkpoint cell fields changed")
+        key = (raw_cell["method"], raw_cell["position"], raw_cell["layer"])
+        if (
+            key[0] not in CAPTURE_METHODS
+            or key[1] not in ALL_POSITION_NAMES
+            or isinstance(key[2], bool)
+            or not isinstance(key[2], int)
+            or key[2] not in normalized_layers
+        ):
+            raise SweepCaptureError("null checkpoint cell identity is invalid")
+        typed_key = (str(key[0]), str(key[1]), int(key[2]))
+        if typed_key in restored:
+            raise SweepCaptureError("null checkpoint contains a duplicate cell")
+        try:
+            accumulator = NullScoreAccumulator.from_state(
+                raw_cell["accumulator"]  # type: ignore[arg-type]
+            )
+        except (TypeError, ValueError) as error:
+            raise SweepCaptureError("null checkpoint accumulator is invalid") from error
+        if accumulator.candidates != normalized_candidates or accumulator.count != (
+            completed
+        ):
+            raise SweepCaptureError("null checkpoint accumulator identity changed")
+        restored[typed_key] = accumulator
+    expected_keys = {
+        (method, position, layer)
+        for method in CAPTURE_METHODS
+        for position in ALL_POSITION_NAMES
+        for layer in normalized_layers
+    }
+    if set(restored) != expected_keys:
+        raise SweepCaptureError("null checkpoint cell inventory is incomplete")
+    return completed, restored
+
+
 def capture_null_calibrations(
     bundle: object,
     sampled_prompts: Sequence[SampledPrompt],
@@ -720,6 +882,9 @@ def capture_null_calibrations(
     provenance: Mapping[str, object],
     disk_check_every: int,
     disk_check: DiskCheck,
+    resume_state: Mapping[str, object] | None = None,
+    checkpoint_every: int | None = None,
+    checkpoint_writer: CheckpointWriter | None = None,
 ) -> tuple[NullCalibration, ...]:
     """Capture candidate-only null moments without storing prompts or trajectories."""
 
@@ -736,14 +901,31 @@ def capture_null_calibrations(
         raise SweepCaptureError("disk check interval must be positive")
     layers = tuple(sorted(set(int(layer) for layer in bundle.lens.source_layers)))  # type: ignore[attr-defined]
     candidates = tuple(sorted(candidate_token_ids))
-    accumulators = {
-        (method, position, layer): NullScoreAccumulator(candidates)
-        for method in CAPTURE_METHODS
-        for position in ALL_POSITION_NAMES
-        for layer in layers
-    }
+    if (checkpoint_every is None) != (checkpoint_writer is None):
+        raise SweepCaptureError(
+            "checkpoint interval and writer must be configured together"
+        )
+    if checkpoint_every is not None and checkpoint_every < 1:
+        raise SweepCaptureError("checkpoint interval must be positive")
+    if resume_state is None:
+        completed_prompts = 0
+        accumulators = {
+            (method, position, layer): NullScoreAccumulator(candidates)
+            for method in CAPTURE_METHODS
+            for position in ALL_POSITION_NAMES
+            for layer in layers
+        }
+    else:
+        completed_prompts, accumulators = restore_null_accumulators(
+            resume_state,
+            candidates=candidates,
+            layers=layers,
+        )
+        if completed_prompts > len(sampled_prompts):
+            raise SweepCaptureError("null checkpoint exceeds the prompt sample")
     disk_check()
-    for prompt_index, sampled in enumerate(sampled_prompts):
+    for prompt_index in range(completed_prompts, len(sampled_prompts)):
+        sampled = sampled_prompts[prompt_index]
         if prompt_index and prompt_index % disk_check_every == 0:
             disk_check()
         residuals = _capture_null_prompt_residuals(
@@ -768,6 +950,22 @@ def capture_null_calibrations(
                             for candidate_index, candidate in enumerate(candidates)
                         }
                     )
+        completed_prompts = prompt_index + 1
+        if (
+            checkpoint_writer is not None
+            and checkpoint_every is not None
+            and (
+                completed_prompts % checkpoint_every == 0
+                or completed_prompts == len(sampled_prompts)
+            )
+        ):
+            checkpoint_writer(
+                serialize_null_accumulators(
+                    accumulators,
+                    layers=layers,
+                    completed_prompts=completed_prompts,
+                )
+            )
     disk_check()
     return tuple(
         accumulators[(method, position, layer)].build(

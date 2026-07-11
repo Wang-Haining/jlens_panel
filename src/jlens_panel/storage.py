@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 
 class DiskGuardError(RuntimeError):
     """Raised before a run would violate a storage safety threshold."""
+
+
+class RunLockError(RuntimeError):
+    """Raised when another process already owns an artifact-run lock."""
 
 
 @dataclass(frozen=True)
@@ -109,3 +115,27 @@ def build_disk_guard(
         )
 
     return check
+
+
+@contextmanager
+def exclusive_run_lock(path: str | Path) -> Iterator[None]:
+    """Hold a non-blocking filesystem lock for one artifact-producing run."""
+
+    import fcntl
+
+    lock_path = Path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise RunLockError(
+                f"artifact run is already locked: {lock_path}"
+            ) from error
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()

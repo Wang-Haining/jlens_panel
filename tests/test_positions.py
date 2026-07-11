@@ -374,6 +374,6 @@ def test_real_synthetic_example_derives_and_resolves_gold_fact() -> None:
 
     assert example.gold_agent_a_fact in example.agent_a_facts
     clue_index = resolved.selection("clue_last").index
-    assert rendered[resolved.offsets[clue_index][0] : resolved.offsets[clue_index][1]] == (
-        example.gold_agent_a_fact[-1]
-    )
+    assert rendered[
+        resolved.offsets[clue_index][0] : resolved.offsets[clue_index][1]
+    ] == (example.gold_agent_a_fact[-1])

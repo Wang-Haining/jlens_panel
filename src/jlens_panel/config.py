@@ -170,6 +170,7 @@ def _validate_sweep(sweep: dict[str, Any]) -> None:
         "max_new_tokens": 8,
         "temperature": 0.0,
         "state_semantics": "generated_token",
+        "eos_policy": "mask_eos_for_tokens_1_through_7",
     }:
         raise ConfigError("sweep.decode must match the frozen greedy policy")
 
@@ -180,6 +181,7 @@ def _validate_sweep(sweep: dict[str, Any]) -> None:
         "mode",
         "ddof",
         "corpus",
+        "chat_template_sha256",
         "rendering_policy",
     }:
         raise ConfigError("sweep.calibration fields do not match the sprint schema")
@@ -191,8 +193,12 @@ def _validate_sweep(sweep: dict[str, Any]) -> None:
         raise ConfigError("sweep.calibration.sample_seed must be an integer")
     if calibration["mode"] != "center" or calibration["ddof"] != 0:
         raise ConfigError("sweep calibration must use centered population moments")
-    if not isinstance(calibration["corpus"], str) or not calibration["corpus"]:
-        raise ConfigError("sweep.calibration.corpus must be a non-empty path")
+    if calibration["corpus"] != "data/fit_corpus/c4_slice.json":
+        raise ConfigError("sweep.calibration.corpus changed from the frozen corpus")
+    if calibration["chat_template_sha256"] != (
+        "3626cf57e4981650af1e21e09175d484f6f297d80ed8075d7b51291f4900331f"
+    ):
+        raise ConfigError("sweep calibration chat-template fingerprint changed")
     rendering_policy = _mapping(
         calibration["rendering_policy"],
         "sweep.calibration.rendering_policy",

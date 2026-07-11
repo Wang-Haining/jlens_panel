@@ -60,7 +60,11 @@ class SweepResultRow:
     def __post_init__(self) -> None:
         if self.position not in ALL_POSITION_NAMES:
             raise ProbeSweepError(f"unknown sweep position: {self.position!r}")
-        if isinstance(self.layer, bool) or not isinstance(self.layer, int) or self.layer < 0:
+        if (
+            isinstance(self.layer, bool)
+            or not isinstance(self.layer, int)
+            or self.layer < 0
+        ):
             raise ProbeSweepError("sweep row layer must be non-negative")
         if self.method not in SWEEP_METHODS:
             raise ProbeSweepError(f"unknown sweep method: {self.method!r}")
@@ -171,9 +175,7 @@ def _result_row(
 
 
 def _gate_status(value: float, threshold: float) -> str:
-    if value == threshold:
-        return "ambiguous_equal_threshold"
-    return "pass" if value > threshold else "fail"
+    return "pass" if value >= threshold else "fail"
 
 
 def run_probe_sweep(
@@ -239,10 +241,7 @@ def run_probe_sweep(
         expected_score_cells
     ):
         raise ProbeSweepError("lens score or calibration cell inventory changed")
-    if any(
-        calibration.n_null_prompts != 200
-        for calibration in calibrations.values()
-    ):
+    if any(calibration.n_null_prompts != 200 for calibration in calibrations.values()):
         raise ProbeSweepError("every calibration cell must use 200 null prompts")
 
     results: list[SweepResultRow] = []
@@ -428,33 +427,40 @@ def run_probe_sweep(
 
     g_info_value = float(best_probe_metrics["top1_accuracy"])
     g_info_status = _gate_status(g_info_value, expected_gates["g_info_min_probe_top1"])
-    if max_share == expected_gates["g_const_max_label_share"] or entropy_bits == (
-        expected_gates["g_const_min_entropy_bits"]
-    ):
-        g_const_status = "ambiguous_equal_threshold"
-    elif (
-        max_share < expected_gates["g_const_max_label_share"]
+    if (
+        max_share <= expected_gates["g_const_max_label_share"]
         and entropy_bits > expected_gates["g_const_min_entropy_bits"]
     ):
         g_const_status = "pass"
     else:
         g_const_status = "fail"
 
-    jlens_top1 = lens_metrics[
-        (best_position, best_layer, "jlens_calibrated")
-    ]["top1_accuracy"]
-    logit_lens_top1 = lens_metrics[
-        (best_position, best_layer, "logitlens_calibrated")
-    ]["top1_accuracy"]
+    jlens_top1 = lens_metrics[(best_position, best_layer, "jlens_calibrated")][
+        "top1_accuracy"
+    ]
+    logit_lens_top1 = lens_metrics[(best_position, best_layer, "logitlens_calibrated")][
+        "top1_accuracy"
+    ]
     ratio_threshold = expected_gates["g_lens_min_probe_ratio"] * g_info_value
-    if jlens_top1 == ratio_threshold:
-        g_lens_status = "ambiguous_equal_threshold"
-    elif jlens_top1 > ratio_threshold and jlens_top1 > logit_lens_top1:
+    if g_info_status != "pass":
+        g_lens_status = "not_reached"
+    elif jlens_top1 >= ratio_threshold and jlens_top1 > logit_lens_top1:
         g_lens_status = "pass"
     else:
         g_lens_status = "fail"
 
     gates_summary: dict[str, object] = {
+        "selection_protocol": {
+            "selection_split": "dev",
+            "evaluation_split": "dev",
+            "same_split_selection_and_reporting": True,
+            "probe_C_tie_order": [1.0, 0.01, 0.1],
+            "best_cell_tie_order": {
+                "positions": list(ALL_POSITION_NAMES),
+                "layers": list(normalized_layers),
+            },
+            "interpretation": "selected diagnostic maximum, not an unbiased estimate",
+        },
         "best_probe_cell": {
             "position": best_position,
             "layer": best_layer,
@@ -468,6 +474,10 @@ def run_probe_sweep(
         },
         "g_const": {
             "status": g_const_status,
+            "evaluated_at": "best_probe_cell",
+            "position": best_position,
+            "layer": best_layer,
+            "candidate_argmax_tie_order": list(inventory),
             "max_label": max_label,
             "max_label_share": max_share,
             "max_share_threshold": expected_gates["g_const_max_label_share"],
@@ -477,6 +487,9 @@ def run_probe_sweep(
         },
         "g_lens": {
             "status": g_lens_status,
+            "evaluated_at": "best_probe_cell",
+            "position": best_position,
+            "layer": best_layer,
             "jlens_calibrated_top1": jlens_top1,
             "probe_top1": g_info_value,
             "probe_ratio": jlens_top1 / g_info_value if g_info_value else None,
@@ -487,6 +500,11 @@ def run_probe_sweep(
     heatmap: dict[str, object] = {
         "schema_version": "jlens-panel-sweep-heatmap-v1",
         "selection": "maximum dev_top1; C tie order 1.0, 0.01, 0.1",
+        "best_cell_tie_order": {
+            "positions": list(ALL_POSITION_NAMES),
+            "layers": list(normalized_layers),
+        },
+        "same_split_selection_and_reporting": True,
         "probe_dev_top1": {
             position: {
                 str(layer): selected_probe[(position, layer)][1]["top1_accuracy"]

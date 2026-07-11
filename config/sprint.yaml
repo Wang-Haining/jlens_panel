@@ -82,12 +82,14 @@ sweep:
     max_new_tokens: 8
     temperature: 0.0
     state_semantics: generated_token
+    eos_policy: mask_eos_for_tokens_1_through_7
   calibration:
     null_prompts: 200
     sample_seed: 20260711
     mode: center
     ddof: 0
     corpus: data/fit_corpus/c4_slice.json
+    chat_template_sha256: 3626cf57e4981650af1e21e09175d484f6f297d80ed8075d7b51291f4900331f
     rendering_policy:
       template_tail: chat_wrapped_tail
       content_last: raw_text_tail

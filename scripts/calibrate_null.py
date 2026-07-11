@@ -11,7 +11,7 @@ from pathlib import Path
 from jlens_panel.calibration import (
     NULL_RENDERING_POLICY,
     POSITION_RESOLVER_SCHEMA,
-    CalibrationArtifactError,
+    NullCalibration,
     load_calibrations,
 )
 from jlens_panel.config import load_config
@@ -22,21 +22,29 @@ from jlens_panel.corpus import (
     sampled_prompt_manifest,
 )
 from jlens_panel.data import DEFAULT_BRIDGE_CANDIDATES
-from jlens_panel.modeling import load_model_bundle, resolve_candidate_token_ids
+from jlens_panel.modeling import (
+    chat_template_fingerprint,
+    load_model_bundle,
+    resolve_candidate_token_ids,
+)
 from jlens_panel.provenance import (
     build_manifest,
+    git_is_dirty,
     git_revision,
+    installed_versions,
+    package_source_fingerprint,
     sha256_file,
     write_json_atomic,
 )
-from jlens_panel.storage import build_disk_guard
-from jlens_panel.sweep.capture import (
-    CAPTURE_METHODS,
-    capture_null_calibrations,
-)
+from jlens_panel.readouts.artifacts import stable_fingerprint
+from jlens_panel.runtime import H100RuntimeError, configure_h100_runtime
+from jlens_panel.storage import build_disk_guard, exclusive_run_lock
+from jlens_panel.sweep.capture import CAPTURE_METHODS, capture_null_calibrations
 from jlens_panel.sweep.positions import ALL_POSITION_NAMES, DECODE_STEPS
 
 COLLECTION_SCHEMA = "jlens-panel-null-calibration-collection-v1"
+CHECKPOINT_SCHEMA = "jlens-panel-null-calibration-checkpoint-v1"
+CHECKPOINT_NAME = "null_calibration_checkpoint.json"
 
 
 class NullCalibrationRunError(RuntimeError):
@@ -77,6 +85,43 @@ def _load_json_mapping(path: Path) -> dict[str, object]:
     return value
 
 
+def _load_checkpoint(path: Path, *, identity_sha256: str) -> dict[str, object]:
+    checkpoint = _load_json_mapping(path)
+    if set(checkpoint) != {
+        "schema_version",
+        "identity_sha256",
+        "state_sha256",
+        "state",
+    } or (
+        checkpoint["schema_version"] != CHECKPOINT_SCHEMA
+        or checkpoint["identity_sha256"] != identity_sha256
+        or not isinstance(checkpoint["state"], Mapping)
+    ):
+        raise NullCalibrationRunError("null-calibration checkpoint identity changed")
+    state = dict(checkpoint["state"])
+    if checkpoint["state_sha256"] != stable_fingerprint(state):
+        raise NullCalibrationRunError("null-calibration checkpoint state SHA changed")
+    return state
+
+
+def _write_checkpoint(
+    path: Path,
+    *,
+    identity_sha256: str,
+    state: Mapping[str, object],
+) -> None:
+    serialized_state = dict(state)
+    write_json_atomic(
+        path,
+        {
+            "schema_version": CHECKPOINT_SCHEMA,
+            "identity_sha256": identity_sha256,
+            "state_sha256": stable_fingerprint(serialized_state),
+            "state": serialized_state,
+        },
+    )
+
+
 def _reuse_complete_collection(
     manifest_path: Path,
     *,
@@ -94,6 +139,7 @@ def _reuse_complete_collection(
         "identity",
         "sample",
         "artifacts",
+        "checkpoint",
         "test_or_smoke_read",
     }:
         raise NullCalibrationRunError("existing calibration manifest fields changed")
@@ -115,7 +161,9 @@ def _reuse_complete_collection(
     if (
         isinstance(layers, (str, bytes))
         or not isinstance(layers, Sequence)
-        or any(isinstance(layer, bool) or not isinstance(layer, int) for layer in layers)
+        or any(
+            isinstance(layer, bool) or not isinstance(layer, int) for layer in layers
+        )
     ):
         raise NullCalibrationRunError("existing source layers are invalid")
     expected_names = expected_calibration_filenames(layers)
@@ -125,14 +173,27 @@ def _reuse_complete_collection(
     ):
         raise NullCalibrationRunError("existing calibration artifact inventory changed")
     paths = tuple(output_dir / name for name in expected_names)
-    expected_sha = {
-        str(path.resolve()): artifact_hashes[path.name] for path in paths
-    }
+    expected_sha = {str(path.resolve()): artifact_hashes[path.name] for path in paths}
     calibrations = load_calibrations(paths, expected_sha256=expected_sha)
     if len(calibrations) != len(expected_names) or any(
         calibration.n_null_prompts != 200 for calibration in calibrations.values()
     ):
         raise NullCalibrationRunError("existing calibration collection is incomplete")
+    if any(
+        calibration.to_payload()["provenance"] != dict(identity)
+        for calibration in calibrations.values()
+    ):
+        raise NullCalibrationRunError(
+            "existing calibration artifacts disagree with manifest identity"
+        )
+    checkpoint = extra["checkpoint"]
+    if not isinstance(checkpoint, Mapping) or set(checkpoint) != {"path", "sha256"}:
+        raise NullCalibrationRunError("existing calibration checkpoint record changed")
+    checkpoint_path = output_dir / CHECKPOINT_NAME
+    if checkpoint["path"] != CHECKPOINT_NAME or sha256_file(checkpoint_path) != (
+        checkpoint["sha256"]
+    ):
+        raise NullCalibrationRunError("existing calibration checkpoint SHA changed")
     return {
         "reused": True,
         "artifacts": len(calibrations),
@@ -146,7 +207,6 @@ def _parser() -> argparse.ArgumentParser:
         description="Capture 200-prompt null calibrations for all sweep cells."
     )
     parser.add_argument("--config", default="config/sprint.yaml")
-    parser.add_argument("--prompts")
     parser.add_argument(
         "--lens",
         default="checkpoints/qwen2.5-7b-instruct-jlens.pt",
@@ -158,14 +218,14 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+def _run(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     sweep = config["sweep"]
     calibration_config = sweep["calibration"]
-    prompts_path = Path(args.prompts or calibration_config["corpus"])
+    prompts_path = Path(calibration_config["corpus"])
     output_dir = Path(args.output_dir)
     manifest_path = output_dir / "calibration_manifest.json"
+    checkpoint_path = output_dir / CHECKPOINT_NAME
     project_root = Path(args.project_root)
     disk_check_every = (
         args.disk_check_every
@@ -195,11 +255,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     revision = git_revision(project_root)
     if revision is None:
         raise NullCalibrationRunError("null calibration requires a Git revision")
+    if git_is_dirty(project_root) is not False:
+        raise NullCalibrationRunError("null calibration requires a clean Git worktree")
+    versions = installed_versions()
+    transformers_version = versions["transformers"]
+    jlens_version = versions["jlens"]
+    if not transformers_version or not jlens_version:
+        raise NullCalibrationRunError("GPU runtime packages are not installed")
+    jlens_source_sha256 = package_source_fingerprint("jlens")
+
+    import transformers
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        config["model"]["name"],
+        revision=config["model"]["revision"],
+    )
+    candidate_token_ids = resolve_candidate_token_ids(
+        tokenizer,
+        DEFAULT_BRIDGE_CANDIDATES,
+    )
+    chat_sha256 = chat_template_fingerprint(tokenizer)
+    if chat_sha256 != calibration_config["chat_template_sha256"]:
+        raise NullCalibrationRunError("pinned chat-template fingerprint changed")
     static_identity = {
         "model_name": config["model"]["name"],
         "model_revision": config["model"]["revision"],
         "config_sha256": config_sha256,
         "git_revision": revision,
+        "upstream_commit": config["lens"]["upstream_commit"],
+        "jlens_source_sha256": jlens_source_sha256,
+        "transformers_version": transformers_version,
+        "jlens_version": jlens_version,
+        "chat_template_sha256": chat_sha256,
+        "eos_policy": sweep["decode"]["eos_policy"],
         "lens_sha256": lens_sha256,
         "corpus_sha256": corpus_sha256,
         "sample_sha256": sample_sha256,
@@ -210,6 +298,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "ddof": int(calibration_config["ddof"]),
         "resolver_schema": POSITION_RESOLVER_SCHEMA,
         "rendering_policy": dict(NULL_RENDERING_POLICY),
+        "candidate_token_ids": candidate_token_ids,
     }
     if manifest_path.exists():
         result = _reuse_complete_collection(
@@ -221,11 +310,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
-    if output_dir.exists() and any(output_dir.iterdir()):
-        raise NullCalibrationRunError(
-            "calibration output is partial and has no manifest; use a new output path"
-        )
+    if output_dir.exists():
+        unexpected = [
+            path.name
+            for path in output_dir.iterdir()
+            if path.name != CHECKPOINT_NAME
+            and not (
+                path.suffix == ".json"
+                and path.name.startswith(("jlens__", "logit_lens__"))
+            )
+        ]
+        if unexpected:
+            raise NullCalibrationRunError(
+                "calibration output has unexpected partial files: "
+                + ", ".join(sorted(unexpected))
+            )
 
+    try:
+        execution_identity = configure_h100_runtime()
+    except H100RuntimeError as error:
+        raise NullCalibrationRunError(str(error)) from error
     model_config = config["model"]
     bundle = load_model_bundle(
         model_name=model_config["name"],
@@ -234,16 +338,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         device_map=model_config["device_map"],
         lens_path=args.lens,
     )
-    candidate_token_ids = resolve_candidate_token_ids(
+    loaded_candidate_token_ids = resolve_candidate_token_ids(
         bundle.tokenizer,
         DEFAULT_BRIDGE_CANDIDATES,
     )
+    if loaded_candidate_token_ids != candidate_token_ids or (
+        chat_template_fingerprint(bundle.tokenizer) != chat_sha256
+    ):
+        raise NullCalibrationRunError("loaded model tokenizer changed after preflight")
     source_layers = sorted(set(int(layer) for layer in bundle.lens.source_layers))
     identity = {
         **static_identity,
-        "candidate_token_ids": candidate_token_ids,
+        **execution_identity,
         "source_layers": source_layers,
     }
+    identity_sha256 = stable_fingerprint(identity)
+    resume_state: Mapping[str, object] | None = None
+    if checkpoint_path.exists():
+        resume_state = _load_checkpoint(
+            checkpoint_path,
+            identity_sha256=identity_sha256,
+        )
+
+    def write_checkpoint(state: Mapping[str, object]) -> None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _write_checkpoint(
+            checkpoint_path,
+            identity_sha256=identity_sha256,
+            state=state,
+        )
+
     calibrations = capture_null_calibrations(
         bundle,
         sampled,
@@ -252,14 +376,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         provenance=identity,
         disk_check_every=disk_check_every,
         disk_check=disk_check,
+        resume_state=resume_state,
+        checkpoint_every=disk_check_every,
+        checkpoint_writer=write_checkpoint,
     )
     expected_names = expected_calibration_filenames(source_layers)
     if len(calibrations) != len(expected_names):
         raise NullCalibrationRunError("captured calibration cell count changed")
+    if not checkpoint_path.is_file():
+        raise NullCalibrationRunError("null capture completed without a checkpoint")
     output_dir.mkdir(parents=True, exist_ok=True)
     artifact_hashes: dict[str, str] = {}
     for calibration, name in zip(calibrations, expected_names, strict=True):
-        artifact_hashes[name] = calibration.save(output_dir / name)
+        artifact_path = output_dir / name
+        if artifact_path.exists():
+            existing = NullCalibration.load(artifact_path)
+            if existing.to_payload() != calibration.to_payload():
+                raise NullCalibrationRunError(
+                    f"partial calibration artifact changed: {name}"
+                )
+            artifact_hashes[name] = sha256_file(artifact_path)
+        else:
+            artifact_hashes[name] = calibration.save(artifact_path)
+    allowed_files = set(expected_names) | {CHECKPOINT_NAME}
+    extra_files = {path.name for path in output_dir.iterdir()} - allowed_files
+    if extra_files:
+        raise NullCalibrationRunError(
+            "calibration output contains unregistered files: "
+            + ", ".join(sorted(extra_files))
+        )
     manifest = build_manifest(
         config_path=args.config,
         project_root=project_root,
@@ -268,6 +413,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "identity": identity,
             "sample": list(sample_records),
             "artifacts": artifact_hashes,
+            "checkpoint": {
+                "path": CHECKPOINT_NAME,
+                "sha256": sha256_file(checkpoint_path),
+            },
             "test_or_smoke_read": False,
         },
     )
@@ -281,6 +430,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    output_dir = Path(args.output_dir)
+    lock_path = output_dir.parent / f".{output_dir.name}.lock"
+    with exclusive_run_lock(lock_path):
+        return _run(args)
 
 
 if __name__ == "__main__":

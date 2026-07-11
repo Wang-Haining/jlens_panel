@@ -11,6 +11,7 @@ import sys
 import tempfile
 from datetime import UTC, datetime
 from importlib import metadata
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,29 @@ def installed_versions() -> dict[str, str | None]:
         except metadata.PackageNotFoundError:
             versions[distribution] = None
     return versions
+
+
+def package_source_fingerprint(package: str) -> str:
+    """Hash a package's Python sources without importing the package."""
+
+    if not package or not package.replace("_", "a").isalnum():
+        raise ValueError("package name must be a simple Python identifier")
+    spec = find_spec(package)
+    if spec is None or spec.origin is None:
+        raise ValueError(f"cannot locate package sources: {package}")
+    origin = Path(spec.origin).resolve()
+    root = origin.parent if origin.name == "__init__.py" else origin
+    files = sorted(root.rglob("*.py")) if root.is_dir() else [root]
+    if not files:
+        raise ValueError(f"package has no Python sources: {package}")
+    digest = hashlib.sha256()
+    for source in files:
+        relative = source.relative_to(root).as_posix() if root.is_dir() else source.name
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256_file(source).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def build_manifest(

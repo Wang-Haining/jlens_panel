@@ -47,7 +47,9 @@ class PositionSelection:
         if self.name not in ALL_POSITION_NAMES:
             raise PositionResolutionError(f"unknown position: {self.name!r}")
         if self.reduction not in ("select", "mean"):
-            raise PositionResolutionError(f"unknown position reduction: {self.reduction!r}")
+            raise PositionResolutionError(
+                f"unknown position reduction: {self.reduction!r}"
+            )
         if not indices or any(
             isinstance(index, bool) or not isinstance(index, int) or index < 0
             for index in indices
@@ -90,7 +92,9 @@ class ResolvedPositions:
         offsets = tuple(tuple(offset) for offset in self.offsets)
         selections = tuple(self.selections)
         if not input_ids or len(input_ids) != len(offsets):
-            raise PositionResolutionError("input IDs and offsets must be non-empty peers")
+            raise PositionResolutionError(
+                "input IDs and offsets must be non-empty peers"
+            )
         if any(
             isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0
             for token_id in input_ids
@@ -131,7 +135,9 @@ def _flat_integer_sequence(value: object, *, name: str) -> tuple[int, ...]:
     return flattened
 
 
-def _validated_offsets(value: object, *, text_length: int) -> tuple[tuple[int, int], ...]:
+def _validated_offsets(
+    value: object, *, text_length: int
+) -> tuple[tuple[int, int], ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise PositionResolutionError("tokenizer offsets must be a flat sequence")
     offsets: list[tuple[int, int]] = []
@@ -237,7 +243,9 @@ def resolve_static_positions(
     except (AttributeError, ValueError) as error:
         raise PositionResolutionError("cannot derive the gold Agent A fact") from error
     if tuple(example.agent_a_facts).count(gold_fact) != 1:
-        raise PositionResolutionError("gold Agent A fact is not unique in structured facts")
+        raise PositionResolutionError(
+            "gold Agent A fact is not unique in structured facts"
+        )
 
     try:
         expected_render = tokenizer.apply_chat_template(  # type: ignore[attr-defined]
@@ -271,10 +279,7 @@ def resolve_static_positions(
 
     content_span = _unique_span(rendered_prompt, content, name="raw user content")
     clue_span = _unique_span(rendered_prompt, gold_fact, name="gold Agent A fact")
-    if not (
-        content_span[0] <= clue_span[0]
-        and clue_span[1] <= content_span[1]
-    ):
+    if not (content_span[0] <= clue_span[0] and clue_span[1] <= content_span[1]):
         raise PositionResolutionError("gold Agent A fact lies outside user content")
     marker_start = rendered_prompt.find(USER_END_MARKER, content_span[1])
     if marker_start < 0:
@@ -305,7 +310,9 @@ def resolve_static_positions(
             add_special_tokens=False,
         )
     except (AttributeError, TypeError, ValueError) as error:
-        raise PositionResolutionError("tokenizer cannot encode the user-close marker") from error
+        raise PositionResolutionError(
+            "tokenizer cannot encode the user-close marker"
+        ) from error
     marker_token_ids = _flat_integer_sequence(marker_ids, name="marker input_ids")
     if len(marker_token_ids) != 1:
         raise PositionResolutionError("<|im_end|> must encode to exactly one token")

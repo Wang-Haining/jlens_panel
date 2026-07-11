@@ -25,6 +25,20 @@ def provenance(
         "model_revision": "a" * 40,
         "config_sha256": "1" * 64,
         "git_revision": "2" * 40,
+        "upstream_commit": "3" * 40,
+        "jlens_source_sha256": "4" * 64,
+        "transformers_version": "5.13.0",
+        "jlens_version": "0.1.0",
+        "torch_version": "2.9.1+cu128",
+        "cuda_runtime": "12.8",
+        "cuda_driver_version": "570.00",
+        "gpu_name": "NVIDIA H100 80GB HBM3",
+        "gpu_compute_capability": [9, 0],
+        "deterministic_algorithms": True,
+        "allow_tf32": False,
+        "cublas_workspace_config": ":4096:8",
+        "chat_template_sha256": "5" * 64,
+        "eos_policy": "mask_eos_for_tokens_1_through_7",
         "lens_sha256": "b" * 64,
         "corpus_sha256": "c" * 64,
         "sample_sha256": "d" * 64,
@@ -135,6 +149,27 @@ def test_accumulator_builds_population_moments() -> None:
     assert cal.candidate_stds == {"amber": 1.0, "bamboo": 2.0}
     assert cal.n_null_prompts == 2
     accumulator.update({"bamboo": 1.0, "amber": 2.0})
+
+
+def test_accumulator_state_round_trip_and_tamper_detection() -> None:
+    accumulator = NullScoreAccumulator(("bamboo", "amber"))
+    accumulator.update({"amber": 1.0, "bamboo": 4.0})
+    accumulator.update({"amber": 3.0, "bamboo": 8.0})
+
+    restored = NullScoreAccumulator.from_state(accumulator.to_state())
+
+    assert restored.to_state() == accumulator.to_state()
+    invalid = accumulator.to_state()
+    invalid["m2"]["amber"] = -1.0
+    with pytest.raises(CalibrationError, match="non-negative"):
+        NullScoreAccumulator.from_state(invalid)
+
+    single = NullScoreAccumulator(("amber", "bamboo"))
+    single.update({"amber": 1.0, "bamboo": 2.0})
+    impossible = single.to_state()
+    impossible["m2"]["amber"] = 1.0
+    with pytest.raises(CalibrationError, match="single-item.*m2"):
+        NullScoreAccumulator.from_state(impossible)
 
 
 def test_artifact_round_trip_sha_and_no_overwrite(tmp_path: Path) -> None:

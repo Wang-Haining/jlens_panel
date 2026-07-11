@@ -50,6 +50,20 @@ REQUIRED_PROVENANCE_FIELDS = frozenset(
         "model_revision",
         "config_sha256",
         "git_revision",
+        "upstream_commit",
+        "jlens_source_sha256",
+        "transformers_version",
+        "jlens_version",
+        "torch_version",
+        "cuda_runtime",
+        "cuda_driver_version",
+        "gpu_name",
+        "gpu_compute_capability",
+        "deterministic_algorithms",
+        "allow_tf32",
+        "cublas_workspace_config",
+        "chat_template_sha256",
+        "eos_policy",
         "lens_sha256",
         "corpus_sha256",
         "sample_sha256",
@@ -156,15 +170,19 @@ def _validate_provenance(
     layer: int,
     n_null_prompts: int,
 ) -> Mapping[str, object]:
-    if not isinstance(provenance, Mapping) or set(provenance) != REQUIRED_PROVENANCE_FIELDS:
+    if (
+        not isinstance(provenance, Mapping)
+        or set(provenance) != REQUIRED_PROVENANCE_FIELDS
+    ):
         raise CalibrationError("calibration provenance fields do not match the schema")
     value = _json_ready(provenance)
     assert isinstance(value, dict)
     if not isinstance(value["model_name"], str) or not value["model_name"]:
         raise CalibrationError("provenance model_name must be non-empty")
-    if not isinstance(value["model_revision"], str) or re.fullmatch(
-        r"[0-9a-f]{40}", value["model_revision"]
-    ) is None:
+    if (
+        not isinstance(value["model_revision"], str)
+        or re.fullmatch(r"[0-9a-f]{40}", value["model_revision"]) is None
+    ):
         raise CalibrationError("provenance model_revision must be a pinned commit")
     for name in (
         "config_sha256",
@@ -174,10 +192,49 @@ def _validate_provenance(
     ):
         if not _is_sha256(value[name]):
             raise CalibrationError(f"provenance {name} must be a SHA-256 digest")
-    if not isinstance(value["git_revision"], str) or re.fullmatch(
-        r"[0-9a-f]{40}", value["git_revision"]
-    ) is None:
+    if (
+        not isinstance(value["git_revision"], str)
+        or re.fullmatch(r"[0-9a-f]{40}", value["git_revision"]) is None
+    ):
         raise CalibrationError("provenance git_revision must be a pinned commit")
+    if (
+        not isinstance(value["upstream_commit"], str)
+        or re.fullmatch(r"[0-9a-f]{40}", value["upstream_commit"]) is None
+    ):
+        raise CalibrationError("provenance upstream_commit must be pinned")
+    for name in ("jlens_source_sha256", "chat_template_sha256"):
+        if not _is_sha256(value[name]):
+            raise CalibrationError(f"provenance {name} must be a SHA-256 digest")
+    for name in (
+        "transformers_version",
+        "jlens_version",
+        "torch_version",
+        "cuda_runtime",
+        "cuda_driver_version",
+        "gpu_name",
+    ):
+        if not isinstance(value[name], str) or not value[name]:
+            raise CalibrationError(f"provenance {name} must be non-empty")
+    if "H100" not in value["gpu_name"]:
+        raise CalibrationError("provenance GPU must be an H100")
+    capability = value["gpu_compute_capability"]
+    if (
+        not isinstance(capability, list)
+        or len(capability) != 2
+        or any(
+            isinstance(component, bool) or not isinstance(component, int)
+            for component in capability
+        )
+    ):
+        raise CalibrationError("provenance GPU compute capability is invalid")
+    if value["deterministic_algorithms"] is not True:
+        raise CalibrationError("provenance deterministic algorithms must be enabled")
+    if value["allow_tf32"] is not False:
+        raise CalibrationError("provenance TF32 must be disabled")
+    if value["cublas_workspace_config"] != ":4096:8":
+        raise CalibrationError("provenance CUBLAS workspace config changed")
+    if value["eos_policy"] != "mask_eos_for_tokens_1_through_7":
+        raise CalibrationError("provenance EOS policy changed")
     if isinstance(value["sample_seed"], bool) or not isinstance(
         value["sample_seed"], int
     ):
@@ -198,8 +255,7 @@ def _validate_provenance(
     if (
         not isinstance(decode_steps, list)
         or any(
-            isinstance(step, bool) or not isinstance(step, int)
-            for step in decode_steps
+            isinstance(step, bool) or not isinstance(step, int) for step in decode_steps
         )
         or decode_steps != [1, 2, 4, 8]
     ):
@@ -403,7 +459,9 @@ class NullCalibration:
         try:
             return cls(**payload)
         except (CalibrationError, TypeError) as error:
-            raise CalibrationArtifactError("invalid calibration payload values") from error
+            raise CalibrationArtifactError(
+                "invalid calibration payload values"
+            ) from error
 
 
 @dataclass(slots=True)
@@ -471,6 +529,59 @@ class NullScoreAccumulator:
             provenance=provenance,
         )
 
+    def to_state(self) -> dict[str, object]:
+        """Return a JSON-compatible resumable sufficient-statistics state."""
+
+        return {
+            "candidates": list(self.candidates),
+            "count": self.count,
+            "means": dict(self._means),
+            "m2": dict(self._m2),
+        }
+
+    @classmethod
+    def from_state(cls, value: Mapping[str, object]) -> NullScoreAccumulator:
+        """Restore validated Welford statistics without replaying prompt scores."""
+
+        if not isinstance(value, Mapping) or set(value) != {
+            "candidates",
+            "count",
+            "means",
+            "m2",
+        }:
+            raise CalibrationError("null accumulator state fields changed")
+        raw_candidates = value["candidates"]
+        if isinstance(raw_candidates, (str, bytes)) or not isinstance(
+            raw_candidates, Sequence
+        ):
+            raise CalibrationError("null accumulator state candidates are invalid")
+        accumulator = cls(tuple(raw_candidates))  # type: ignore[arg-type]
+        count = value["count"]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise CalibrationError("null accumulator state count is invalid")
+        means = _validated_scores(
+            value["means"],  # type: ignore[arg-type]
+            name="null accumulator means",
+            nonnegative=False,
+        )
+        m2 = _validated_scores(
+            value["m2"],  # type: ignore[arg-type]
+            name="null accumulator m2",
+            nonnegative=True,
+        )
+        if tuple(means) != accumulator.candidates or tuple(m2) != (
+            accumulator.candidates
+        ):
+            raise CalibrationError("null accumulator state support changed")
+        if count == 0 and (any(means.values()) or any(m2.values())):
+            raise CalibrationError("empty null accumulator state has nonzero moments")
+        if count == 1 and any(m2.values()):
+            raise CalibrationError("single-item null accumulator has nonzero m2")
+        accumulator.count = count
+        accumulator._means = means
+        accumulator._m2 = m2
+        return accumulator
+
 
 def calibrate(
     scores: Mapping[str, float],
@@ -532,7 +643,9 @@ def load_calibrations(
     for path in normalized_paths:
         calibration = NullCalibration.load(
             path,
-            expected_sha256=(expected[str(path)] if expected_sha256 is not None else None),
+            expected_sha256=(
+                expected[str(path)] if expected_sha256 is not None else None
+            ),
         )
         serialized_provenance = _canonical_json(calibration.provenance)
         if reference_provenance is None:

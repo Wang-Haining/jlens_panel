@@ -1,7 +1,12 @@
 import json
 from pathlib import Path
 
-from jlens_panel.provenance import installed_versions, sha256_file, write_json_atomic
+from jlens_panel.provenance import (
+    installed_versions,
+    package_source_fingerprint,
+    sha256_file,
+    write_json_atomic,
+)
 
 
 def test_sha256_file_is_stable(tmp_path: Path) -> None:
@@ -31,3 +36,11 @@ def test_installed_versions_has_fixed_keys() -> None:
         "torch",
         "transformers",
     }
+
+
+def test_package_source_fingerprint_is_stable_without_importing_package() -> None:
+    first = package_source_fingerprint("jlens_panel")
+    second = package_source_fingerprint("jlens_panel")
+
+    assert first == second
+    assert len(first) == 64

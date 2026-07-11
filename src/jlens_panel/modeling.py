@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
+
+CHAT_TEMPLATE_FINGERPRINT_CONTENT = (
+    "Notes:\n- Cedar clue ends here.\nQuestion: respond."
+)
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,18 @@ def render_chat(tokenizer: Any, messages: Sequence[Mapping[str, str]]) -> str:
         tokenize=False,
         add_generation_prompt=True,
     )
+
+
+def chat_template_fingerprint(tokenizer: Any) -> str:
+    """Hash the pinned one-user generation render used by regression tests."""
+
+    rendered = render_chat(
+        tokenizer,
+        [{"role": "user", "content": CHAT_TEMPLATE_FINGERPRINT_CONTENT}],
+    )
+    if not isinstance(rendered, str) or not rendered:
+        raise ValueError("chat template rendered an invalid fingerprint prompt")
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
 def resolve_candidate_token_ids(

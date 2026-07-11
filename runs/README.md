@@ -39,5 +39,10 @@ Run stages in order, stopping to inspect each gate:
    on development log loss. Review the sender competence and readout metrics.
 5. `04_clarification_smoke.sbatch` runs only the first 20 test items under the
    four paired conditions and three seeds, then computes clustered intervals.
+6. `05_position_sweep.sbatch` is the current diagnostic sprint: it builds
+   resumable 200-prompt null calibrations, then captures and analyzes only the
+   frozen v3 train/dev splits across all registered positions and layers.
 
-The smoke is exploratory. A full dirty test is not submitted automatically.
+Stage 4 is development-contaminated historical scaffolding and must not be
+rerun. Stage 5 never reads it or the v3 test split. A fresh held-out evaluation
+is generated only after the diagnostic method choices are frozen.

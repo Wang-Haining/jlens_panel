@@ -22,9 +22,7 @@ def test_probe_sweep_emits_all_rows_and_three_gate_outcomes() -> None:
     dev_rows = tuple(
         tuple(float(column == index) for column in range(16)) for index in range(16)
     )
-    train_residuals = {
-        (position, 0): train_rows for position in ALL_POSITION_NAMES
-    }
+    train_residuals = {(position, 0): train_rows for position in ALL_POSITION_NAMES}
     dev_residuals = {(position, 0): dev_rows for position in ALL_POSITION_NAMES}
 
     jlens_rows = tuple(
@@ -46,6 +44,20 @@ def test_probe_sweep_emits_all_rows_and_three_gate_outcomes() -> None:
         "model_revision": "a" * 40,
         "config_sha256": "1" * 64,
         "git_revision": "2" * 40,
+        "upstream_commit": "3" * 40,
+        "jlens_source_sha256": "4" * 64,
+        "transformers_version": "5.13.0",
+        "jlens_version": "0.1.0",
+        "torch_version": "2.9.1+cu128",
+        "cuda_runtime": "12.8",
+        "cuda_driver_version": "570.00",
+        "gpu_name": "NVIDIA H100 80GB HBM3",
+        "gpu_compute_capability": [9, 0],
+        "deterministic_algorithms": True,
+        "allow_tf32": False,
+        "cublas_workspace_config": ":4096:8",
+        "chat_template_sha256": "5" * 64,
+        "eos_policy": "mask_eos_for_tokens_1_through_7",
         "lens_sha256": "b" * 64,
         "corpus_sha256": "c" * 64,
         "sample_sha256": "d" * 64,
@@ -120,5 +132,5 @@ def test_probe_sweep_emits_all_rows_and_three_gate_outcomes() -> None:
     assert heatmap["probe_dev_top1"]["template_tail"]["0"] == 1.0
 
 
-def test_exact_gate_threshold_is_reported_as_ambiguous() -> None:
-    assert _gate_status(0.25, 0.25) == "ambiguous_equal_threshold"
+def test_frozen_minimum_gate_threshold_is_inclusive() -> None:
+    assert _gate_status(0.25, 0.25) == "pass"

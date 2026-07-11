@@ -3,8 +3,10 @@ import pytest
 from jlens_panel.storage import (
     DiskGuardError,
     DiskStatus,
+    RunLockError,
     build_disk_guard,
     enforce_disk_guard,
+    exclusive_run_lock,
 )
 
 
@@ -45,3 +47,12 @@ def test_disk_guard_reports_all_violations() -> None:
 def test_build_disk_guard_rejects_unknown_environment() -> None:
     with pytest.raises(DiskGuardError, match="unknown.*environment"):
         build_disk_guard({}, project_root=".", environment="cluster")
+
+
+def test_exclusive_run_lock_fails_closed_for_duplicate_writer(tmp_path) -> None:
+    lock_path = tmp_path / ".capture.lock"
+
+    with exclusive_run_lock(lock_path):
+        with pytest.raises(RunLockError, match="already locked"):
+            with exclusive_run_lock(lock_path):
+                raise AssertionError("duplicate lock unexpectedly acquired")
