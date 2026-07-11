@@ -12,6 +12,8 @@ The first milestone is deliberately narrow:
 The dirty run is exploratory. Its test split is a go/no-go instrument and must not
 be reused as the confirmatory paper dataset. The full protocol and stop rules are
 in [DIRTY_RUN_PLAN.md](DIRTY_RUN_PLAN.md).
+The completed proof-of-concept metrics, artifact hashes, and no-go decision are
+recorded in [POC_RESULTS.md](POC_RESULTS.md).
 
 The synthetic task is deliberately nontrivial: Agent A sees descriptions from
 which a bridge concept must be derived, while the 16 bridge strings themselves
