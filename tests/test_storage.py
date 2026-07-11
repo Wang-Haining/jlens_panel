@@ -1,6 +1,11 @@
 import pytest
 
-from jlens_panel.storage import DiskGuardError, DiskStatus, enforce_disk_guard
+from jlens_panel.storage import (
+    DiskGuardError,
+    DiskStatus,
+    build_disk_guard,
+    enforce_disk_guard,
+)
 
 
 def test_disk_guard_accepts_safe_status() -> None:
@@ -35,3 +40,8 @@ def test_disk_guard_reports_all_violations() -> None:
     assert "free bytes" in message
     assert "used fraction" in message
     assert "project bytes" in message
+
+
+def test_build_disk_guard_rejects_unknown_environment() -> None:
+    with pytest.raises(DiskGuardError, match="unknown.*environment"):
+        build_disk_guard({}, project_root=".", environment="cluster")

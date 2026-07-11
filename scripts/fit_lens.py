@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from jlens_panel.config import load_config
+from jlens_panel.corpus import load_prompts
 from jlens_panel.modeling import load_model_bundle
 from jlens_panel.provenance import (
     build_manifest,
@@ -18,32 +19,6 @@ from jlens_panel.provenance import (
     write_json_atomic,
 )
 from jlens_panel.storage import enforce_disk_guard, inspect_disk
-
-
-def load_prompts(path: str | Path) -> list[str]:
-    """Load a JSON list or JSONL records with a text/prompt field."""
-
-    source = Path(path)
-    if source.suffix == ".jsonl":
-        values: list[Any] = [
-            json.loads(line) for line in source.read_text().splitlines() if line.strip()
-        ]
-    else:
-        values = json.loads(source.read_text(encoding="utf-8"))
-    if not isinstance(values, list):
-        raise ValueError("Fit corpus must contain a JSON list")
-    prompts: list[str] = []
-    for value in values:
-        if isinstance(value, str):
-            prompt = value
-        elif isinstance(value, dict):
-            prompt = value.get("text") or value.get("prompt")
-        else:
-            prompt = None
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError("Every fit-corpus record must provide non-empty text")
-        prompts.append(prompt)
-    return prompts
 
 
 def ensure_fit_state_manifest(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,3 +75,37 @@ def enforce_disk_guard(
         )
     if violations:
         raise DiskGuardError("; ".join(violations))
+
+
+def build_disk_guard(
+    config: Mapping[str, object],
+    *,
+    project_root: str | Path,
+    environment: str,
+) -> Callable[[], None]:
+    """Build the shared local/Tempest periodic disk check."""
+
+    if environment not in ("local", "tempest"):
+        raise DiskGuardError(f"unknown disk-guard environment: {environment!r}")
+    storage = config.get("storage")
+    if not isinstance(storage, Mapping):
+        raise DiskGuardError("configuration storage section must be a mapping")
+    try:
+        if environment == "tempest":
+            minimum_free = int(float(storage["tempest_minimum_free_tb"]) * 10**12)
+        else:
+            minimum_free = int(float(storage["local_minimum_free_gb"]) * 10**9)
+        maximum_used_fraction = float(storage["filesystem_warning_fraction"])
+        maximum_project_bytes = int(float(storage["project_warning_gb"]) * 10**9)
+    except (KeyError, TypeError, ValueError) as error:
+        raise DiskGuardError("configuration storage thresholds are invalid") from error
+
+    def check() -> None:
+        enforce_disk_guard(
+            inspect_disk(project_root),
+            minimum_free_bytes=minimum_free,
+            maximum_used_fraction=maximum_used_fraction,
+            maximum_project_bytes=maximum_project_bytes,
+        )
+
+    return check

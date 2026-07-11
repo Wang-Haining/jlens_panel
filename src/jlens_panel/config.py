@@ -31,6 +31,16 @@ _READOUT_METHODS = {
     "text_only",
 }
 _CONDITIONS = {"generic", "jlens_targeted", "best_non_j", "oracle"}
+_SWEEP_POSITIONS = (
+    "template_tail",
+    "content_last",
+    "clue_last",
+    "meanpool_content8",
+    "decode_1",
+    "decode_2",
+    "decode_4",
+    "decode_8",
+)
 
 
 def _mapping(value: object, name: str) -> dict[str, Any]:
@@ -129,4 +139,86 @@ def load_config(path: str | Path) -> dict[str, Any]:
         "storage.filesystem_warning_fraction",
     )
 
+    if "sweep" in value:
+        _validate_sweep(_mapping(value["sweep"], "sweep"))
+
     return value
+
+
+def _validate_sweep(sweep: dict[str, Any]) -> None:
+    """Validate the result-independent sprint settings and frozen gates."""
+
+    if set(sweep) != {
+        "schema_version",
+        "positions",
+        "max_seq_len",
+        "decode",
+        "calibration",
+        "probe",
+        "gates",
+    }:
+        raise ConfigError("sweep fields do not match the sprint schema")
+    if sweep["schema_version"] != "jlens-panel-sweep-v1":
+        raise ConfigError("sweep.schema_version is unsupported")
+    if sweep["positions"] != list(_SWEEP_POSITIONS):
+        raise ConfigError("sweep.positions must contain the eight frozen cells")
+    _positive_integer(sweep["max_seq_len"], "sweep.max_seq_len")
+
+    decode = _mapping(sweep["decode"], "sweep.decode")
+    if decode != {
+        "steps": [1, 2, 4, 8],
+        "max_new_tokens": 8,
+        "temperature": 0.0,
+        "state_semantics": "generated_token",
+    }:
+        raise ConfigError("sweep.decode must match the frozen greedy policy")
+
+    calibration = _mapping(sweep["calibration"], "sweep.calibration")
+    if set(calibration) != {
+        "null_prompts",
+        "sample_seed",
+        "mode",
+        "ddof",
+        "corpus",
+        "rendering_policy",
+    }:
+        raise ConfigError("sweep.calibration fields do not match the sprint schema")
+    if calibration["null_prompts"] != 200:
+        raise ConfigError("sweep.calibration.null_prompts must be exactly 200")
+    if isinstance(calibration["sample_seed"], bool) or not isinstance(
+        calibration["sample_seed"], int
+    ):
+        raise ConfigError("sweep.calibration.sample_seed must be an integer")
+    if calibration["mode"] != "center" or calibration["ddof"] != 0:
+        raise ConfigError("sweep calibration must use centered population moments")
+    if not isinstance(calibration["corpus"], str) or not calibration["corpus"]:
+        raise ConfigError("sweep.calibration.corpus must be a non-empty path")
+    rendering_policy = _mapping(
+        calibration["rendering_policy"],
+        "sweep.calibration.rendering_policy",
+    )
+    expected_rendering = {
+        "template_tail": "chat_wrapped_tail",
+        "content_last": "raw_text_tail",
+        "clue_last": "raw_text_tail",
+        "meanpool_content8": "raw_text_last8_mean",
+        "decode_1": "chat_wrapped_generated_token",
+        "decode_2": "chat_wrapped_generated_token",
+        "decode_4": "chat_wrapped_generated_token",
+        "decode_8": "chat_wrapped_generated_token",
+    }
+    if rendering_policy != expected_rendering:
+        raise ConfigError("sweep calibration rendering policy changed")
+
+    probe = _mapping(sweep["probe"], "sweep.probe")
+    if probe != {"c_values": [1.0, 0.01, 0.1], "selection_metric": "dev_top1"}:
+        raise ConfigError("sweep probe grid or selection metric changed")
+
+    gates = _mapping(sweep["gates"], "sweep.gates")
+    if gates != {
+        "g_info_min_probe_top1": 0.25,
+        "g_const_max_label_share": 0.5,
+        "g_const_min_entropy_bits": 1.5,
+        "g_lens_min_probe_ratio": 0.5,
+    }:
+        raise ConfigError("sweep gates differ from the frozen sprint thresholds")

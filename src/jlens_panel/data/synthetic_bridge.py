@@ -348,6 +348,16 @@ class SyntheticBridgeExample:
         )
 
     @property
+    def gold_agent_a_fact(self) -> str:
+        """Return the exact rendered Agent A fact for the gold chain."""
+
+        template = _find_template(self.split, self.template_family)
+        return template.render_agent_a_fact(
+            self.source_entity,
+            bridge_clue(self.gold_bridge, self.split),
+        )
+
+    @property
     def distractor_count(self) -> int:
         return len(self.distractor_chains)
 

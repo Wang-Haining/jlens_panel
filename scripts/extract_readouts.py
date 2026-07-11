@@ -39,7 +39,7 @@ from jlens_panel.readouts.artifacts import (
     stable_fingerprint,
     validate_shared_inventory,
 )
-from jlens_panel.storage import enforce_disk_guard, inspect_disk
+from jlens_panel.storage import build_disk_guard
 
 CapturePreSpeech = Callable[..., Any]
 CaptureNextToken = Callable[..., Any]
@@ -261,23 +261,11 @@ def build_disk_check(
 ) -> DiskCheck:
     """Build the periodic filesystem guard; RunByteBudget tracks run size."""
 
-    storage = config["storage"]
-    assert isinstance(storage, Mapping)
-    if environment == "tempest":
-        minimum_free = int(float(storage["tempest_minimum_free_tb"]) * 10**12)
-    else:
-        minimum_free = int(float(storage["local_minimum_free_gb"]) * 10**9)
-
-    def check() -> None:
-        status = inspect_disk(project_root)
-        enforce_disk_guard(
-            status,
-            minimum_free_bytes=minimum_free,
-            maximum_used_fraction=float(storage["filesystem_warning_fraction"]),
-            maximum_project_bytes=int(float(storage["project_warning_gb"]) * 10**9),
-        )
-
-    return check
+    return build_disk_guard(
+        config,
+        project_root=project_root,
+        environment=environment,
+    )
 
 
 def move_canonical_jacobian_to_input_device(bundle: Any, layer: int) -> None:
