@@ -110,22 +110,16 @@ def main() -> None:
             dev_targets=dev_targets,
             threads=threads,
         )
-    for solver, dual, max_iter, tol in (
-        ("lbfgs", False, 1000, 1e-2),
-        ("liblinear", True, 1000, 1e-4),
-        ("sag", False, 1000, 1e-2),
-        ("saga", False, 1000, 1e-2),
-    ):
+    for threads in (1, 4, 12):
         _fit_once(
-            solver=solver,
-            dual=dual,
-            max_iter=max_iter,
-            tol=tol,
+            solver="lbfgs",
+            max_iter=1000,
+            tol=1e-4,
             train_rows=train_rows,
             train_targets=train_targets,
             dev_rows=dev_rows,
             dev_targets=dev_targets,
-            threads=12,
+            threads=threads,
         )
 
 
