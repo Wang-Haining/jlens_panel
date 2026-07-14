@@ -116,6 +116,9 @@ def test_sbatch_is_one_h100_train_dev_only_and_calibrates_first() -> None:
     assert "#SBATCH --account=group-jasonclark" in text
     assert "#SBATCH --gres=gpu:h100:1" in text
     assert "#SBATCH --time=0-04:00:00" in text
+    assert "--phase capture" in text
+    assert "--phase analyze" in text
+    assert "export JLENS_PROBE_BLAS_THREADS=4" in text
     assert "train.jsonl" in text and "dev.jsonl" in text
     assert "test.jsonl" not in text and "smoke" not in text.casefold()
     assert text.index("scripts/calibrate_null.py") < text.index(

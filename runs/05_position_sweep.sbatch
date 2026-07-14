@@ -29,7 +29,29 @@ python scripts/calibrate_null.py \
   --project-root . \
   --environment tempest
 python scripts/sweep_positions.py \
-  --phase all \
+  --phase capture \
+  --config config/sprint.yaml \
+  --train data/generated/dirty_v3/train.jsonl \
+  --dev data/generated/dirty_v3/dev.jsonl \
+  --lens checkpoints/qwen2.5-7b-instruct-jlens.pt \
+  --artifact-dir artifacts/sweep_v3 \
+  --calibration-dir artifacts/calibration \
+  --results analysis/sweep_results.csv \
+  --heatmap analysis/sweep_heatmap.json \
+  --analysis-manifest analysis/sweep_manifest.json \
+  --project-root . \
+  --environment tempest
+
+# Small multinomial probe matrices are much slower when BLAS oversubscribes
+# the node. The exact LBFGS estimator and its frozen optimization settings are
+# unchanged; this cap only controls linear-algebra worker count.
+export JLENS_PROBE_BLAS_THREADS=4
+export OMP_NUM_THREADS=${JLENS_PROBE_BLAS_THREADS}
+export MKL_NUM_THREADS=${JLENS_PROBE_BLAS_THREADS}
+export OPENBLAS_NUM_THREADS=${JLENS_PROBE_BLAS_THREADS}
+
+python scripts/sweep_positions.py \
+  --phase analyze \
   --config config/sprint.yaml \
   --train data/generated/dirty_v3/train.jsonl \
   --dev data/generated/dirty_v3/dev.jsonl \
